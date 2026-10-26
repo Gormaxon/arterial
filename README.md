@@ -1,6 +1,7 @@
 # Arterial
 
-**A no-WebAssembly 3D game engine for the browser** — WebAssembly-free (WebAssemblyless, no WASM): plain TypeScript
+**No WebAssembly engine** — a 3D game engine for the browser with no WebAssembly in it at all (no WASM, WebAssembly-free,
+WebAssemblyless): plain TypeScript
 on three.js. **[Live demo](https://gormaxon.github.io/arterial/)**
 
 A 3D game engine for the browser, written in TypeScript on [three.js](https://threejs.org) — **with no WebAssembly

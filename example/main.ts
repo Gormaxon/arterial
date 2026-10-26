@@ -5,7 +5,7 @@
  */
 
 import * as THREE from 'three'
-import { World, Loop, registerCoreEntities, applySky, prepareLevelMaterial, animateLevelMaterial, animateSurfaces, type LevelFile } from '../src'
+import { World, Loop, LightBlock, registerCoreEntities, applySky, prepareLevelMaterial, animateLevelMaterial, animateSurfaces, type LevelFile } from '../src'
 
 registerCoreEntities()
 
@@ -23,6 +23,10 @@ addEventListener('resize', () => {
 const world = new World()
 prepareLevelMaterial(renderer)
 applySky(world.scene)
+// The baked level's depth goes down first, as part of the scene (StaticChunks.depthScene): add it once.
+world.scene.add(world.statics.depthScene)
+// The world's lights, sent to the graphics chip once a frame in one block every lit shader reads (render/lightblock.ts).
+const lightBlock = new LightBlock(renderer, world.scene)
 
 const brush = (pos: [number, number, number], size: [number, number, number], surface = 'wall') => ({ type: 'brush', pos, props: { size, surface } })
 const level: LevelFile = {
@@ -44,6 +48,8 @@ const level: LevelFile = {
   ],
 }
 world.load(level)
+// Once the level's materials are compiled (they are at the first drawing): the light block takes three.js's light state.
+let lightsAdopted = false
 
 // Effects are named data: the engine draws every particle; a game only says what each effect is.
 world.particles.register('smoke', {
@@ -76,6 +82,7 @@ const loop = new Loop(
     animateSurfaces(t)
     animateLevelMaterial(t)
     renderer.render(world.scene, camera)
+    if (!lightsAdopted) lightsAdopted = lightBlock.adopt()
     info.textContent = `${loop.stats.fps.toFixed(0)} fps · ${world.renderTriangles} level triangles · ${Object.values(world.particles.live()).reduce((a, b) => a + b, 0)} particles`
   },
 )

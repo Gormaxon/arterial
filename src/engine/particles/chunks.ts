@@ -52,6 +52,17 @@ export class ChunkPool {
   private readonly life: Float32Array
   private readonly maxLife: Float32Array
   private readonly restY: Float32Array
+  /** Has each chunk come down on its floor yet? */
+  private readonly landed: Uint8Array
+  /** Lying still with its place written (update): left alone until it starts to shrink away. */
+  private readonly held: Uint8Array
+  /** Each still piece's place at its full size (held): shrinking away, only its size changes — scaled, not worked out. */
+  private readonly rest: Float32Array
+  /**
+   * Called the first time each chunk comes down on its floor: where, how fast it was falling (m/s) and how big it is
+   * (its largest side). What a spent case hitting the floor is heard by.
+   */
+  onLand: ((x: number, y: number, z: number, speed: number, size: number) => void) | null = null
   /** Live chunks occupy [0, count); the InstancedMesh draws exactly that many. */
   private count = 0
   private cursor = 0
@@ -66,6 +77,9 @@ export class ChunkPool {
     this.life = new Float32Array(capacity)
     this.maxLife = new Float32Array(capacity)
     this.restY = new Float32Array(capacity)
+    this.landed = new Uint8Array(capacity)
+    this.held = new Uint8Array(capacity)
+    this.rest = new Float32Array(capacity * 16)
 
     this.mesh = new THREE.InstancedMesh(
       // Boxes for rubble and plate; a caller can give another shape (gore is lumps, not cubes).
@@ -103,6 +117,9 @@ export class ChunkPool {
     this.life[to] = this.life[from]!
     this.maxLife[to] = this.maxLife[from]!
     this.restY[to] = this.restY[from]!
+    this.landed[to] = this.landed[from]!
+    // (Its place is written at its old slot, not this one.)
+    this.held[to] = 0
   }
 
   burst(origin: THREE.Vector3, o: ChunkBurst): void {
@@ -148,19 +165,45 @@ export class ChunkPool {
       this.life[i] = life
       this.maxLife[i] = life
       this.restY[i] = o.restY
+      this.landed[i] = 0
+      this.held[i] = 0
     }
   }
 
   update(dt: number): void {
+    // Sent to the graphics chip only when a place was written (a pile lying still is not sent again every frame).
+    let wrote = false
     for (let i = 0; i < this.count; ) {
       const next = this.life[i]! - dt
       const i3 = i * 3
       if (next <= 0) {
         this.count--
         if (i !== this.count) this.move(i, this.count)
+        wrote = true
         continue
       }
       this.life[i] = next
+      // Shrink away over the last third of life, so pieces vanish rather than pop.
+      const t = next / this.maxLife[i]!
+      // Down and still, its place already written: nothing to work out until it begins to shrink (a room's rubble and
+      // gore lying about was every piece's matrix worked out again every frame for nothing).
+      if (this.held[i]) {
+        if (t <= 0.33) {
+          // Its place at full size, its three axes scaled down (what compose with the smaller size would give).
+          const f = t / 0.33
+          const r = this.rest
+          const a = this.mesh.instanceMatrix.array as Float32Array
+          const o = i * 16
+          for (let k = 0; k < 12; k++) a[o + k] = r[o + k]! * f
+          a[o + 12] = r[o + 12]!
+          a[o + 13] = r[o + 13]!
+          a[o + 14] = r[o + 14]!
+          a[o + 15] = 1
+          wrote = true
+        }
+        i++
+        continue
+      }
 
       this.vel[i3 + 1] = this.vel[i3 + 1]! - 34 * dt
       this.pos[i3] = this.pos[i3]! + this.vel[i3]! * dt
@@ -170,6 +213,10 @@ export class ChunkPool {
       const floor = this.restY[i]! + this.size[i3 + 1]! * 0.5
       if (this.pos[i3 + 1]! <= floor) {
         this.pos[i3 + 1] = floor
+        if (!this.landed[i]) {
+          this.landed[i] = 1
+          this.onLand?.(this.pos[i3]!, floor, this.pos[i3 + 2]!, -this.vel[i3 + 1]!, Math.max(this.size[i3]!, this.size[i3 + 1]!, this.size[i3 + 2]!))
+        }
         if (this.vel[i3 + 1]! < -1.2) {
           // Bounce, losing most of the energy and a lot of the spin.
           this.vel[i3 + 1] = -this.vel[i3 + 1]! * 0.32
@@ -179,10 +226,15 @@ export class ChunkPool {
           this.spin[i3 + 1]! *= 0.4
           this.spin[i3 + 2]! *= 0.4
         } else {
-          // Settled: stop dead so a pile of rubble does not jitter.
+          // Settled: stop dead so a pile of rubble does not jitter. (Sliding to a stop, and still at last: not crept toward
+          // nought for a hundred frames, each of them its place worked out again.)
           this.vel[i3 + 1] = 0
           this.vel[i3]! *= 0.82
           this.vel[i3 + 2]! *= 0.82
+          if (Math.abs(this.vel[i3]!) < 0.05 && Math.abs(this.vel[i3 + 2]!) < 0.05) {
+            this.vel[i3] = 0
+            this.vel[i3 + 2] = 0
+          }
           this.spin[i3] = 0
           this.spin[i3 + 1] = 0
           this.spin[i3 + 2] = 0
@@ -193,8 +245,6 @@ export class ChunkPool {
       this.rot[i3 + 1] = this.rot[i3 + 1]! + this.spin[i3 + 1]! * dt
       this.rot[i3 + 2] = this.rot[i3 + 2]! + this.spin[i3 + 2]! * dt
 
-      // Shrink away over the last third of life, so pieces vanish rather than pop.
-      const t = next / this.maxLife[i]!
       const fade = t > 0.33 ? 1 : t / 0.33
 
       _p.set(this.pos[i3]!, this.pos[i3 + 1]!, this.pos[i3 + 2]!)
@@ -203,12 +253,25 @@ export class ChunkPool {
       _s.set(this.size[i3]! * fade, this.size[i3 + 1]! * fade, this.size[i3 + 2]! * fade)
       _m.compose(_p, _q, _s)
       this.mesh.setMatrixAt(i, _m)
+      wrote = true
+      this.held[i] = this.landed[i]! && this.vel[i3 + 1] === 0 && Math.abs(this.vel[i3]!) < 1e-3 && Math.abs(this.vel[i3 + 2]!) < 1e-3 && this.spin[i3] === 0 && this.spin[i3 + 1] === 0 && this.spin[i3 + 2] === 0 ? 1 : 0
+      if (this.held[i]) {
+        // Kept at full size for the shrinking (rest): the axes worked out at this fade, undone.
+        const r = this.rest
+        const o = i * 16
+        const el = _m.elements
+        const inv = fade > 0 ? 1 / fade : 0
+        for (let k = 0; k < 12; k++) r[o + k] = el[k]! * inv
+        r[o + 12] = el[12]!
+        r[o + 13] = el[13]!
+        r[o + 14] = el[14]!
+      }
       i++
     }
 
     this.mesh.count = this.count
     this.mesh.visible = this.count > 0
-    if (this.count > 0) this.mesh.instanceMatrix.needsUpdate = true
+    if (wrote) this.mesh.instanceMatrix.needsUpdate = true
   }
 
   clear(): void {

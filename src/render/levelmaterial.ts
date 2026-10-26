@@ -12,8 +12,10 @@
  */
 
 import * as THREE from 'three'
+import { VERTEX_POINT_LIGHTS } from './lightblock'
 import { SURFACE_KEYS, surfaceMaps, type SurfaceKey } from './textures'
 import { SURFACE_LOOKS } from './materials'
+import { LAVA_GLSL } from './lavaglsl'
 
 /** A surface's layer in the arrays: its place in the surface list. */
 export function surfaceLayer(key: SurfaceKey): number {
@@ -31,6 +33,8 @@ interface Uniforms {
   uOffset: THREE.IUniform<THREE.Vector2[]>
   /** Each layer's average colour, linear: the point its texture's contrast is stretched about. */
   uMean: THREE.IUniform<THREE.Color[]>
+  /** Seconds, for the lava's crust drifting and its melt churning (lavaglsl.ts). */
+  uLavaTime: THREE.IUniform<number>
 }
 
 let material: THREE.MeshPhongMaterial | null = null
@@ -42,6 +46,7 @@ const uniforms: Uniforms = {
   uEmissive: { value: Array.from({ length: LAYERS }, () => new THREE.Color(0, 0, 0)) },
   uOffset: { value: Array.from({ length: LAYERS }, () => new THREE.Vector2(0, 0)) },
   uMean: { value: Array.from({ length: LAYERS }, () => new THREE.Color(0.5, 0.5, 0.5)) },
+  uLavaTime: { value: 0 },
 }
 
 /**
@@ -171,23 +176,27 @@ function patch(shader: { uniforms: Record<string, THREE.IUniform>; vertexShader:
 flat varying float vLayer;
 flat varying vec2 vTone;
 varying vec3 vPointDiffuse;
-#if NUM_POINT_LIGHTS > 0
-struct PointLight { vec3 position; vec3 color; float distance; float decay; };
-uniform PointLight pointLights[ NUM_POINT_LIGHTS ];
-#endif
+varying vec3 vLavaWorld;
+${VERTEX_POINT_LIGHTS}
 void main() {
 \tvLayer = aSurface.x;
 \tvTone = aSurface.yz / 255.0;`)
     .replace('#include <project_vertex>', `#include <project_vertex>
+\tvLavaWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
 \tvPointDiffuse = vec3( 0.0 );
 #if NUM_POINT_LIGHTS > 0
 \t{
 \t\tvec3 pn = normalize( transformedNormal );
 \t\tfor ( int i = 0; i < NUM_POINT_LIGHTS; i ++ ) {
 \t\t\tvec3 L = pointLights[ i ].position - mvPosition.xyz;
-\t\t\tfloat d = length( L );
-\t\t\tfloat fall = 1.0 / max( pow( d, pointLights[ i ].decay ), 0.01 );
-\t\t\tif ( pointLights[ i ].distance > 0.0 ) fall *= pow2( saturate( 1.0 - pow4( d / pointLights[ i ].distance ) ) );
+\t\t\tfloat dd = dot( L, L );
+\t\t\tfloat range = pointLights[ i ].distance;
+\t\t\t// Out of its reach it lights nothing (its fall-off is zero there): the rest is not worked out.
+\t\t\tif ( range > 0.0 && dd >= range * range ) continue;
+\t\t\tfloat d = sqrt( dd );
+\t\t\t// (Its decay is 2 for every lamp the game makes: the square, not pow.)
+\t\t\tfloat fall = 1.0 / max( pointLights[ i ].decay == 2.0 ? dd : pow( d, pointLights[ i ].decay ), 0.01 );
+\t\t\tif ( range > 0.0 ) fall *= pow2( saturate( 1.0 - pow4( d / range ) ) );
 \t\t\tvPointDiffuse += pointLights[ i ].color * fall * saturate( dot( pn, L / d ) );
 \t\t}
 \t}
@@ -206,6 +215,10 @@ const float uTintAmount[ ${LAYERS} ] = float[]( ${SURFACE_KEYS.map((k) => (TINT_
 flat varying float vLayer;
 flat varying vec2 vTone;
 varying vec3 vPointDiffuse;
+uniform float uLavaTime;
+varying vec3 vLavaWorld;
+const int LAVA_LAYER = ${surfaceLayer('lava')};
+${LAVA_GLSL}
 `
   const normalMaps = chunk.normal_fragment_maps.replace(/texture2D\( normalMap, vNormalMapUv \)/g, 'texture( uNormalArray, vec3( vNormalMapUv + uOffset[ li ], vLayer ) )')
   const phong = chunk.lights_phong_fragment.replace('= specular;', '= uSpecular[ li ];').replace('= shininess;', '= uShininess[ li ];')
@@ -247,10 +260,22 @@ vec3 texel = max( uMean[ li ] + ( sampledDiffuseColor.rgb - uMean[ li ] ) * ${TE
 float shade = 1.0 + ( vTone.x - 0.5 ) * ${SHADE_RANGE.toFixed(3)};
 vec3 tint = mix( vec3( 1.0 ), uTints[ int( vTone.y * ${(TINTS.length - 0.001).toFixed(3)} ) ], uTintAmount[ li ] );
 diffuseColor.rgb *= texel * shade * tint;
-diffuseColor.a *= sampledDiffuseColor.a;`,
+diffuseColor.a *= sampledDiffuseColor.a;
+// Lava is not a picture: it is worked out here, in the world, every frame (lavaglsl.ts).
+bool isLava = li == LAVA_LAYER;
+vec3 lvEmis = vec3( 0.0 );
+float lvH = 0.0;
+if ( isLava ) {
+\tvec3 lvAlbedo;
+\tvec3 lvSight = vLavaWorld - cameraPosition;
+\tlvSurface( vLavaWorld.xz, uLavaTime, lvSight.xz / max( 0.25, -lvSight.y ), lvEmis, lvAlbedo, lvH );
+\tdiffuseColor.rgb = lvAlbedo;
+}`,
     )
-    .replace('#include <normal_fragment_maps>', normalMaps)
-    .replace('#include <emissivemap_fragment>', 'totalEmissiveRadiance = uEmissive[ li ] * sampledDiffuseColor.rgb;')
+    .replace('#include <normal_fragment_maps>', `${normalMaps}
+// The crust's relief: plates proud of the glowing cracks, lit by the room.
+if ( isLava ) normal = lvBump( - vViewPosition, normalize( vNormal ), lvH, 0.14 );`)
+    .replace('#include <emissivemap_fragment>', 'totalEmissiveRadiance = isLava ? lvEmis : uEmissive[ li ] * sampledDiffuseColor.rgb;')
     .replace('#include <lights_phong_fragment>', phong)
     .replace('#include <lights_phong_pars_fragment>', phongPars)
     .replace('#include <lights_fragment_begin>', lights)
@@ -267,7 +292,7 @@ export function getLevelMaterial(): THREE.MeshPhongMaterial {
   material = new THREE.MeshPhongMaterial({ color: 0xffffff, map: stand, normalMap: stand })
   material.normalScale.set(0.85, 0.85)
   material.onBeforeCompile = patch
-  material.customProgramCacheKey = () => 'level-surfaces-v6'
+  material.customProgramCacheKey = () => 'level-surfaces-v8'
   return material
 }
 
@@ -298,6 +323,7 @@ export function prepareLevelMaterial(renderer: THREE.WebGLRenderer): void {
 export function animateLevelMaterial(elapsed: number): void {
   const lava = surfaceLayer('lava')
   const pad = surfaceLayer('padglow')
+  uniforms.uLavaTime.value = elapsed
   if (lava >= 0) {
     uniforms.uOffset.value[lava]!.set(elapsed * 0.013, elapsed * 0.021)
     const look = SURFACE_LOOKS.lava

@@ -46,6 +46,12 @@ export abstract class Batch {
   written = 0
   /** When the last particle written dies (engine clock). After it the batch is switched off. */
   lastDeath = -1
+  /**
+   * The particle lastDeath was set by has been cut short (a tracer whose round stopped: ParticleWorld.endTracer): it is
+   * worked out again from the records at the next flush. (Only ever raised, the tracers' batch stayed on — a draw of
+   * nothing — for the three seconds a round may fly, after every shot.)
+   */
+  deathStale = false
   private dirtyLo = -1
   private dirtyHi = -1
   protected abstract readonly buffer: THREE.InterleavedBuffer
@@ -100,6 +106,17 @@ export abstract class Batch {
       buf.needsUpdate = true
       this.dirtyLo = this.dirtyHi = -1
     }
+    if (this.deathStale) {
+      // Each record's birth (its fourth number) and life (its eighth): the last of them to die.
+      let last = -1
+      const d = this.data
+      for (let o = 3, end = Math.min(this.written, this.capacity) * STRIDE; o < end; o += STRIDE) {
+        const at = d[o]! + d[o + 4]!
+        if (at > last) last = at
+      }
+      this.lastDeath = last
+      this.deathStale = false
+    }
     const live = now < this.lastDeath
     this.object.visible = live
     if (live) this.setDrawCount(Math.min(this.written, this.capacity))
@@ -125,6 +142,7 @@ export abstract class Batch {
       this.buffer.needsUpdate = true
     }
     this.lastDeath = -1
+    this.deathStale = false
     this.object.visible = false
   }
 }
@@ -207,6 +225,7 @@ varying vec3 vColor;
 varying float vAlpha;
 varying vec2 vRot;
 varying float vCell;
+varying vec2 vMode;
 ${RAMP_GLSL}
 ${MOTION_GLSL}
 ${SEED_GLSL}
@@ -238,6 +257,8 @@ void main() {
   vec4 look = ptRamp(row, a);
   vec4 sz = ptRamp(row + 1.0, a);
   vCell = k1.z * 0.5;
+  // (Mixed batch) added on, and lit from above: the layer's own (effects.ts RampTable.bake).
+  vMode = ptConst(row, 2).zw;
   // Everything that is the same over a whole sprite is done here, once, not per pixel.
   vColor = pow(max(look.rgb, vec3(0.0)), vec3(0.4545));
   float rot = aMisc.x + aMisc.y * age;
@@ -258,13 +279,19 @@ varying vec3 vColor;
 varying float vAlpha;
 varying vec2 vRot;
 varying float vCell;
+varying vec2 vMode;
 void main() {
   vec2 q = gl_PointCoord - 0.5;
   vec2 p = vec2(vRot.x * q.x - vRot.y * q.y, vRot.y * q.x + vRot.x * q.y) + 0.5;
   // Rotation can carry a corner outside the cell; clamp so it never reads the neighbouring sprite.
   p = clamp(p, 0.004, 0.996);
   float a = texture2D(uMap, vec2(vCell + p.x * 0.5, p.y)).a * vAlpha;
-#ifdef SHADED
+#ifdef MIXED
+  // Every sprite style in one draw: colour premultiplied by its alpha, blended ONE / ONE_MINUS_SRC_ALPHA — which is the
+  // ordinary blend for dust and smoke, and an added glow when the alpha written is 0.
+  float lit = vMode.y > 0.5 ? mix(1.18, 0.62, smoothstep(-0.45, 0.45, q.y)) : 1.0;
+  gl_FragColor = vec4(vColor * lit * a, vMode.x > 0.5 ? 0.0 : a);
+#elif defined(SHADED)
   // Smoke is a volume lit from above: brighter at the top of each puff, darker underneath,
   // denser in the middle. Unrotated coordinates, so the light stays overhead as it spins.
   float lit = mix(1.18, 0.62, smoothstep(-0.45, 0.45, q.y));
@@ -273,6 +300,13 @@ void main() {
   gl_FragColor = vec4(vColor, a);
 #endif
 }`
+
+/**
+ * Every sprite style (soft, smoke, glow) in one batch and one draw (SpriteBatch with this blending): each particle drawn
+ * as its layer says (effects.ts: added on, lit from above). Three draws were three of a fight's dearest calls on the
+ * Chromebook, where each draw costs a quarter of a millisecond of its processor.
+ */
+export const MIXED_BLENDING = -1 as THREE.Blending
 
 export class SpriteBatch extends Batch {
   protected buffer!: THREE.InterleavedBuffer
@@ -310,12 +344,16 @@ export class SpriteBatch extends Batch {
         uScale: { value: 600 },
         uMaxPx: { value: 400 },
       },
-      defines: this.shaded ? { SHADED: '' } : {},
+      defines: this.blending === MIXED_BLENDING ? { MIXED: '' } : this.shaded ? { SHADED: '' } : {},
       vertexShader: SPRITE_VERT,
       fragmentShader: SPRITE_FRAG,
       transparent: true,
       depthWrite: false,
-      blending: this.blending,
+      blending: this.blending === MIXED_BLENDING ? THREE.CustomBlending : this.blending,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneMinusSrcAlphaFactor,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
     })
     const points = new THREE.Points(g, this.material)
     points.frustumCulled = false
@@ -488,9 +526,9 @@ attribute vec4 iD;   // drawn-from point (muzzle), alpha
 uniform float uTime;
 uniform float uViewH;  // pixel height of what it is drawn into
 varying vec3 vCol;
-varying vec2 vUv;
+varying vec2 vQ;       // along the streak from its tail, and across it, in core widths
+varying float vL;      // the streak's length, in core widths
 varying float vA;
-varying float vLen;
 ${RAMP_GLSL}
 ${MOTION_GLSL}
 // Distance flown along the line and the speed now, under drag that goes as v² (a round's).
@@ -520,6 +558,9 @@ void flight(float t, float quad, out vec3 head, out vec3 dir, out float flown, o
   }
 }
 const float LINGER = 0.09;
+const float TR = 3.0;   // the glow's reach round the line, in core widths
+/** Metres in front of the eye a tracer is cut at (see the cut below). */
+const float NEAR_CUT = 0.3;
 void main() {
   float age = uTime - iA.w;
   float life = iB.w;
@@ -556,55 +597,84 @@ void main() {
   tail = mix(iD.xyz, tail, clamp(flown / 6.0, 0.0, 1.0));
   vec4 vh = viewMatrix * vec4(head, 1.0);
   vec4 vt = viewMatrix * vec4(tail, 1.0);
+  // A round that has flown past you has one end behind the eye. The width is held to a few pixels at the two ENDS
+  // only, and between them it is blended — so a streak running from in front of you to behind you was blended through
+  // the space just in front of the eye, where a few centimetres fill the screen: a round whipping past drew as a bar
+  // fanning across the whole view. The streak is cut where it comes within NEAR_CUT of the eye, so both ends are
+  // always in front and the width holds along all of it; one wholly behind the eye is not drawn.
+  if (vh.z > -NEAR_CUT && vt.z > -NEAR_CUT) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vA = 0.0; return; }
+  if (vh.z > -NEAR_CUT) vh.xyz = mix(vt.xyz, vh.xyz, (-NEAR_CUT - vt.z) / (vh.z - vt.z));
+  else if (vt.z > -NEAR_CUT) vt.xyz = mix(vh.xyz, vt.xyz, (-NEAR_CUT - vh.z) / (vt.z - vh.z));
   float w = iC.z * ptRamp(row + 1.0, age / life).y * (0.75 + 0.5 * flare);
-  // A round coming straight at you is end-on: its streak shrank to nothing and incoming fire was invisible. On screen
-  // a tracer is never shorter than a few widths, so one flying at you is a burning streak growing toward you.
-  vec2 axis = vh.xy - vt.xy;
-  float al = length(axis);
-  float minLen = max(w, 2.0 * max(-vh.z, 0.05) / (projectionMatrix[1][1] * uViewH)) * 7.0;
-  if (al < minLen) {
-    // Too short to have a direction of its own (end-on, or a stopped tail run in to the head): along its flight.
-    vec2 fd = vh.xy - (viewMatrix * vec4(head - dir, 1.0)).xy;
-    vec2 ad = al > 1e-6 ? axis / al : (length(fd) > 1e-6 ? normalize(fd) : vec2(0.0, 1.0));
-    vt.xy = vh.xy - ad * minLen;
-    vt.z = vh.z;
-    axis = vh.xy - vt.xy;
-    al = minLen;
-  }
-  vec2 side = vec2(-axis.y, axis.x) / al;
-  vec4 vp = mix(vt, vh, position.y + 0.5);
+  // A round coming straight at you is end-on: it is drawn as what it is then, a burning point growing toward you (the
+  // rod's round end seen face on; see below). It used to be stretched into a short streak pointing whichever way its
+  // flight happened to project, which read as a stray dash, not as fire coming in.
+  // A rod of burning light, not a strip: the quad turned about the streak's own 3D line to face the eye, carried past
+  // both ends so they are round, and shaded by distance from the line (TRACER_FRAG). The old flat strip, faced to the
+  // screen by its 2D direction and square at both ends, read as a sticker in the air from every side.
+  float t = position.y + 0.5;
+  vec3 a3 = vt.xyz;
+  vec3 b3 = vh.xyz;
+  vec3 d3 = b3 - a3;
+  float len3 = length(d3);
+  d3 = len3 > 1e-5 ? d3 / len3 : vec3(0.0, 1.0, 0.0);
+  vec3 vp = mix(a3, b3, t);
   // Never thinner than a couple of pixels wherever it is: a far tracer stays a thin bright line instead of breaking
   // up into crawling dots. A widened one is dimmed by as much, so it does not get brighter for being far away.
   float px = 2.0 * max(-vp.z, 0.05) / (projectionMatrix[1][1] * uViewH);
-  float core = max(w, px * 2.6);
-  // The quad is four times the core: the glow round it is part of the tracer, not a separate thing.
-  vp.xy += side * position.x * core * 6.0;
-  gl_Position = projectionMatrix * vp;
+  // And never fatter than several pixels either: a round whipping past a metre from the eye is a fast streak, not a
+  // flame filling a corner of the screen (its width is real metres, and that close a centimetre is huge). Between the
+  // two it keeps its real width, each end by its own distance: one near is fatter than one far, and one running away
+  // from you narrows down its length — held to the same few pixels everywhere, they read as strokes on the glass.
+  float core = clamp(w, px * 1.8, px * 9.0);
+  vec3 eye3 = normalize(-vp);
+  vec3 side3 = cross(d3, eye3);
+  float sl = length(side3);
+  side3 = sl > 1e-4 ? side3 / sl : vec3(1.0, 0.0, 0.0);
+  // The quad's other axis across the line of sight too (the streak as the eye sees it): end on, a round point.
+  vec3 along3 = normalize(cross(eye3, side3));
+  float seen = len3 * sqrt(max(0.0, 1.0 - dot(d3, eye3) * dot(d3, eye3)));
+  float ext = TR * core;
+  vp = mix(a3, b3, t) + along3 * (t * 2.0 - 1.0) * ext + side3 * position.x * 2.0 * ext;
+  gl_Position = projectionMatrix * vec4(vp, 1.0);
   vec4 look = ptRamp(row, age / life);
   vCol = look.rgb;
-  vUv = uv;
-  vA = look.a * abs(iD.w) * sqrt(w / core) * burn * flare;
-  vLen = al;
+  vQ = vec2((t * (seen + 2.0 * ext) - ext) / core, position.x * 2.0 * TR);
+  vL = seen / core;
+  vA = look.a * abs(iD.w) * min(1.0, sqrt(w / core)) * burn * flare;
 }`
 
 const TRACER_FRAG = /* glsl */ `
 varying vec3 vCol;
-varying vec2 vUv;
+varying vec2 vQ;
+varying float vL;
 varying float vA;
-varying float vLen;
+const float TR = 3.0;
 void main() {
-  float u = abs(vUv.x - 0.5) * 2.0;     // 0 on the line, 1 at the edge of the glow
-  float t = 1.0 - vUv.y;                // 0 at the head, 1 at the tail
-  // A white-hot thread, the tracer's colour round it, and a wide faint halo.
-  // The quad is six cores wide: u = 0.17 is the edge of the core.
-  float thread = exp(-u * u * 160.0);
-  float body = exp(-u * u * 22.0);
+  // Distance from the streak's line (the segment, so the head and tail are round), in core widths.
+  float dA = vQ.x < 0.0 ? -vQ.x : max(0.0, vQ.x - vL);
+  float d = length(vec2(dA, vQ.y));
+  float u = d / TR;                     // 0 on the line, 1 at the edge of the glow
+  if (u >= 1.0) discard;
+  float t = 1.0 - clamp(vQ.x / max(vL, 1e-3), 0.0, 1.0);   // 0 at the head, 1 at the tail
+  // A comet, not a stroke: the rod is fattest at its head and narrows to its tail (the burning compound and the hot
+  // gas it leaves, thinning as it cools), so it has a shape the eye reads as a solid thing flying, nose first.
+  float r = mix(1.15, 0.4, t);
+  float dr = d / r;
+  // A white-hot thread, a round tube of the tracer's colour (brightest down its middle, rounding off to its sides,
+  // as light through a burning rod does), and a faint halo.
+  float thread = exp(-dr * dr * 4.5);
+  float tube = 1.4;
+  float body = dr < tube ? sqrt(1.0 - (dr / tube) * (dr / tube)) : 0.0;
   float halo = exp(-u * u * 4.0) * (1.0 - u * u);
   // Brightest at the head, the burning compound, then trailing off; the very end of the tail feathers out.
   float head = exp(-t * 9.0);
   float trail = pow(1.0 - t, 1.6) * smoothstep(1.0, 0.86, t);
-  float hot = thread * (0.6 + 0.9 * head) * (0.35 + trail);
-  float glow = body * (0.55 + 0.9 * head) * trail + halo * 0.3 * (0.4 + trail);
+  // The burning compound itself: a white-hot ball at the nose, a little fatter than the rod behind it.
+  vec2 nose = vec2(vQ.x - vL, vQ.y);
+  float bulb = exp(-dot(nose, nose) * 1.1);
+  float hot = thread * (0.6 + 0.9 * head) * (0.35 + trail) + bulb * 0.9;
+  float glow = body * (0.55 + 0.9 * head) * trail + halo * 0.3 * (0.4 + trail) + bulb * 0.5;
   float a = min(1.0, hot * 1.5 + glow) * vA;
   vec3 c = mix(vCol, vec3(1.0, 0.96, 0.86), clamp(hot * 1.3, 0.0, 1.0));
   gl_FragColor = vec4(sqrt(max(c, vec3(0.0))), a);
@@ -648,6 +718,22 @@ export class TracerBatch extends InstancedBatch {
 // Fireballs
 // ---------------------------------------------------------------------------
 
+/**
+ * A fireball is a ball of churning fire, not a lit disc. Drawn flat, an additive sphere is the same colour all over and
+ * reads exactly as what it is — a circle swelling on the screen. So: the surface boils (each vertex pushed in and out by
+ * slowly moving noise, its own pattern per fireball), it burns hottest where you look into its depth and thins to soft
+ * edges toward its rim, and as it cools, sooty patches spread through it and the fire is left in ragged tongues.
+ */
+const FIREBALL_NOISE = /* glsl */ `
+float fbHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float fbNoise(vec3 x) {
+  vec3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(fbHash(i), fbHash(i + vec3(1, 0, 0)), f.x), mix(fbHash(i + vec3(0, 1, 0)), fbHash(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(fbHash(i + vec3(0, 0, 1)), fbHash(i + vec3(1, 0, 1)), f.x), mix(fbHash(i + vec3(0, 1, 1)), fbHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+float fbFbm(vec3 p) { return 0.6 * fbNoise(p) + 0.3 * fbNoise(p * 2.1 + 7.3) + 0.1 * fbNoise(p * 4.3 + 3.1); }`
+
 const FIREBALL_VERT = /* glsl */ `
 attribute vec4 iA;
 attribute vec4 iB;
@@ -656,8 +742,13 @@ attribute vec4 iD;
 uniform float uTime;
 varying vec3 vCol;
 varying float vA;
+varying float vAge;
+varying vec3 vNoiseAt;
+varying vec3 vNormalV;
+varying vec3 vViewV;
 ${RAMP_GLSL}
 ${MOTION_GLSL}
+${FIREBALL_NOISE}
 void main() {
   float age = uTime - iA.w;
   float life = iB.w;
@@ -667,9 +758,19 @@ void main() {
   vec3 c = ptTraj(iA.xyz, iB.xyz, iC.x, iC.y, age);
   float r = iC.z * ptRamp(row + 1.0, a).x;
   vec4 look = ptRamp(row, a);
-  vec3 wp = c + position * r;
+  // Its own pattern: seeded from where and when it was born.
+  vec3 seed = vec3(fbHash(iA.xyz + iA.w), fbHash(iA.zxy - iA.w), fbHash(iA.yzx + 3.7)) * 40.0;
+  vec3 n = normalize(position);
+  vec3 at = n * 1.8 + seed + vec3(0.0, -age * 1.6, 0.0);
+  // Lumpy from the start, more so as it billows out.
+  float bulge = (fbFbm(at) - 0.5) * (0.45 + 0.35 * a);
+  vec3 wp = c + n * r * (1.0 + bulge);
   vec4 mv = modelViewMatrix * vec4(wp, 1.0);
   gl_Position = projectionMatrix * mv;
+  vNormalV = normalize((modelViewMatrix * vec4(n, 0.0)).xyz);
+  vViewV = -mv.xyz;
+  vNoiseAt = n * 3.2 + seed + vec3(0.0, -age * 2.4, 0.0);
+  vAge = a;
   vCol = look.rgb;
   vA = look.a * iD.z;
 }`
@@ -677,8 +778,24 @@ void main() {
 const FIREBALL_FRAG = /* glsl */ `
 varying vec3 vCol;
 varying float vA;
+varying float vAge;
+varying vec3 vNoiseAt;
+varying vec3 vNormalV;
+varying vec3 vViewV;
+${FIREBALL_NOISE}
 void main() {
-  gl_FragColor = vec4(sqrt(max(vCol, vec3(0.0))), vA);
+  // Facing you: looking deep into the fire. Toward the rim: a thin skin of it, fading out softly.
+  float facing = abs(dot(normalize(vNormalV), normalize(vViewV)));
+  float depth = pow(facing, 1.3);
+  float churn = fbFbm(vNoiseAt);
+  // Soot spreading through it as it cools: the fire is left in ragged tongues, then goes out.
+  float soot = smoothstep(0.62 - 0.55 * vAge, 0.95 - 0.5 * vAge, 1.0 - churn);
+  float heat = (0.45 + 0.9 * churn) * (0.35 + 0.65 * depth);
+  vec3 col = vCol * heat * (1.0 - 0.85 * soot);
+  // The hottest folds burn toward white.
+  col += vec3(1.0, 0.85, 0.55) * pow(max(churn - 0.55, 0.0) * 2.2, 2.0) * (1.0 - vAge) * depth;
+  float a = vA * smoothstep(0.0, 0.45, facing) * (1.0 - 0.7 * soot);
+  gl_FragColor = vec4(sqrt(max(col, vec3(0.0))), a);
 }`
 
 export class FireballBatch extends InstancedBatch {
@@ -689,7 +806,8 @@ export class FireballBatch extends InstancedBatch {
 
   protected build(): THREE.Object3D {
     return this.instanced(
-      new THREE.SphereGeometry(1, 18, 12),
+      // Fine enough that the boiling surface reads as lumps, not facets.
+      new THREE.SphereGeometry(1, 28, 18),
       new THREE.ShaderMaterial({
         uniforms: { uTime: this.shared.uTime, uRamp: this.shared.uRamp },
         vertexShader: FIREBALL_VERT,

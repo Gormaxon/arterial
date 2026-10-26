@@ -14,6 +14,13 @@
  * A gaming mouse (250 Hz and up) reports often enough to be passed straight through.
  */
 
+/** A report this many counts or fewer is never taken for a warp spike. */
+const SPIKE_MIN = 200
+/** ...nor one less than this many times the biggest of the reports just before it... */
+const SPIKE_RATIO = 6
+/** ...which are those of the last this many milliseconds (continuous movement). */
+const SPIKE_WINDOW_MS = 60
+
 export class Input {
   readonly keys = new Set<string>()
   private readonly mouseButtons = new Set<number>()
@@ -108,9 +115,36 @@ export class Input {
     // would show up in the console as an error for something that is not one: the
     // click-to-play overlay is still on screen, so the player can always take the
     // lock by hand.
-    const pending = this.target.requestPointerLock() as unknown
-    if (pending instanceof Promise) pending.catch(() => {})
+    //
+    // Raw input where the browser has it (`unadjustedMovement`): the device's own counts, no OS acceleration, and no
+    // hidden cursor. Without it Chrome keeps a hidden cursor and warps it back to the middle as it nears an edge, and
+    // on Windows that warp sometimes leaks into one report as a huge false movement — the view jerks as if flicked,
+    // most often turning steadily one way. Where raw input is refused (not supported), the plain lock is taken.
+    if (this.rawRefused) {
+      const plain = this.target.requestPointerLock() as unknown
+      if (plain instanceof Promise) plain.catch(() => {})
+      return
+    }
+    let raw: unknown
+    try {
+      raw = (this.target.requestPointerLock as (o?: { unadjustedMovement: boolean }) => unknown).call(this.target, { unadjustedMovement: true })
+    } catch {
+      raw = undefined
+    }
+    if (raw instanceof Promise) {
+      raw.catch((err: unknown) => {
+        if ((err as { name?: string })?.name !== 'NotSupportedError') return
+        this.rawRefused = true
+        const plain = this.target.requestPointerLock() as unknown
+        if (plain instanceof Promise) plain.catch(() => {})
+      })
+    }
   }
+
+  /** The browser refused raw input once: every later lock is the plain one. */
+  private rawRefused = false
+  /** The sizes of the last few reports, for telling a warp spike from real movement (`onPointerMove`). */
+  private readonly recent: { t: number; size: number }[] = []
 
   isDown(code: string): boolean {
     return this.keys.has(code)
@@ -253,12 +287,34 @@ export class Input {
     const reports = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : []
     for (const r of reports.length > 0 ? reports : [e]) {
       if (r.movementX === 0 && r.movementY === 0) continue
+      if (this.isSpike(r.timeStamp, Math.hypot(r.movementX, r.movementY))) continue
       const t = r.timeStamp
       const gap = t - this.lastReport
       if (this.lastReport > 0 && gap > 0 && gap < 50) this.reportMs = this.reportMs * 0.9 + gap * 0.1
       this.lastReport = t
       this.motion.push(t, r.movementX, r.movementY)
     }
+  }
+
+  /**
+   * A warp spike (see `requestLock`): in the middle of continuous movement, one report far bigger than SPIKE_MIN and
+   * SPIKE_RATIO times the ones just before it. A real flick builds over several reports and is never one of these; a
+   * report after the mouse was still is always believed.
+   */
+  private isSpike(t: number, size: number): boolean {
+    const r = this.recent
+    while (r.length > 0 && t - r[0]!.t > SPIKE_WINDOW_MS) r.shift()
+    let spike = false
+    if (size > SPIKE_MIN && r.length >= 3) {
+      let biggest = 0
+      for (const p of r) biggest = Math.max(biggest, p.size)
+      spike = size > biggest * SPIKE_RATIO
+    }
+    if (!spike) {
+      r.push({ t, size })
+      if (r.length > 6) r.shift()
+    }
+    return spike
   }
 
   private onPointerLockChange = (): void => {
@@ -268,6 +324,7 @@ export class Input {
       this.mouseButtons.clear()
       this.edges.clear()
       this.motion.length = 0
+      this.recent.length = 0
     }
     this.onLockChange?.(this.locked)
   }

@@ -22,6 +22,11 @@ interface SurfaceBox {
 /** Surface boxes by bake key: every buildable that bakes the same geometry shares one list. */
 const SURFACE_BOXES = new Map<string, SurfaceBox[]>()
 const _local = new THREE.Vector3()
+const _holeInv = new THREE.Matrix4()
+const _holeRay = new THREE.Ray()
+const _holeHit = new THREE.Vector3()
+/** How far past where a round met its collision a hole is looked for in its drawn pieces (metres, its own space). */
+const HOLE_REACH = 3
 
 function boxesOf(parts: Part[]): SurfaceBox[] {
   return parts.map((p) => {
@@ -103,6 +108,41 @@ export abstract class Buildable extends Entity {
       }
     }
     return best ? best.surface : null
+  }
+
+  /**
+   * Where a round that met its collision at `point`, going `dir`, holes what is drawn: its collision is a few plain
+   * boxes round a shape's detail, so the round went on (in `outPoint`, the face's way out in `outNormal`) to the first
+   * of its drawn pieces' boxes on its line. False if it meets none — through a gap in the shape: no hole in the air.
+   */
+  holeAt(point: THREE.Vector3, dir: THREE.Vector3, outPoint: THREE.Vector3, outNormal: THREE.Vector3): boolean {
+    const boxes = this.surfaceBoxes()
+    if (boxes.length === 0) return false
+    this.object.updateMatrixWorld()
+    _holeInv.copy(this.object.matrixWorld).invert()
+    // From a hair before the point, so a point on a piece's face is on that piece.
+    const d = _holeRay.direction.copy(dir).transformDirection(_holeInv)
+    const o = _holeRay.origin.copy(point).applyMatrix4(_holeInv).addScaledVector(d, -0.01)
+    let best = HOLE_REACH
+    let at: SurfaceBox | null = null
+    for (const b of boxes) {
+      const t = b.box.containsPoint(o) ? 0 : _holeRay.intersectBox(b.box, _holeHit) ? _holeHit.distanceTo(o) : Infinity
+      if (t < best) {
+        best = t
+        at = b
+      }
+    }
+    if (!at) return false
+    outPoint.copy(o).addScaledVector(d, best)
+    // The face it is on: the one of the box nearest the point.
+    const { min, max } = at.box
+    const faces = [outPoint.x - min.x, max.x - outPoint.x, outPoint.y - min.y, max.y - outPoint.y, outPoint.z - min.z, max.z - outPoint.z]
+    let f = 0
+    for (let i = 1; i < 6; i++) if (Math.abs(faces[i]!) < Math.abs(faces[f]!)) f = i
+    outNormal.set(f === 0 ? -1 : f === 1 ? 1 : 0, f === 2 ? -1 : f === 3 ? 1 : 0, f === 4 ? -1 : f === 5 ? 1 : 0)
+    outPoint.applyMatrix4(this.object.matrixWorld)
+    outNormal.transformDirection(this.object.matrixWorld)
+    return true
   }
 
   /** The parts' boxes, built once per shape (the parts themselves are thrown away). */

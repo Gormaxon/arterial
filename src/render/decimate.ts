@@ -10,11 +10,13 @@
 
 import * as THREE from 'three'
 
-/** A clustered copy of `geo` with grid cells `cell` metres across (in the geometry's own space). */
+/**
+ * A clustered copy of `geo` with grid cells `cell` metres across (in the geometry's own space). Every attribute is
+ * carried over — normals, texture coordinates, vertex colours, skin indices and weights — each cluster taking its
+ * first vertex's, so a skinned mesh's copy rides the same skeleton.
+ */
 export function decimate(geo: THREE.BufferGeometry, cell: number): THREE.BufferGeometry {
   const pos = geo.attributes.position as THREE.BufferAttribute
-  const nrm = geo.attributes.normal as THREE.BufferAttribute | undefined
-  const uv = geo.attributes.uv as THREE.BufferAttribute | undefined
   const n = pos.count
   const inv = 1 / Math.max(1e-6, cell)
   const clusterOf = new Int32Array(n)
@@ -41,23 +43,22 @@ export function decimate(geo: THREE.BufferGeometry, cell: number): THREE.BufferG
   }
   const m = first.length
   const P = new Float32Array(m * 3)
-  const N = nrm ? new Float32Array(m * 3) : null
-  const U = uv ? new Float32Array(m * 2) : null
   for (let c = 0; c < m; c++) {
     const k = sum[c * 4 + 3]!
     P[c * 3] = sum[c * 4]! / k
     P[c * 3 + 1] = sum[c * 4 + 1]! / k
     P[c * 3 + 2] = sum[c * 4 + 2]! / k
-    const f = first[c]!
-    if (N && nrm) {
-      N[c * 3] = nrm.getX(f)
-      N[c * 3 + 1] = nrm.getY(f)
-      N[c * 3 + 2] = nrm.getZ(f)
-    }
-    if (U && uv) {
-      U[c * 2] = uv.getX(f)
-      U[c * 2 + 1] = uv.getY(f)
-    }
+  }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(P, 3))
+  for (const [name, attr] of Object.entries(geo.attributes)) {
+    if (name === 'position') continue
+    const a = attr as THREE.BufferAttribute
+    const size = a.itemSize
+    const Ctor = (a.array as unknown as { constructor: new (n: number) => THREE.TypedArray }).constructor
+    const out = new Ctor(m * size)
+    for (let c = 0; c < m; c++) for (let k = 0; k < size; k++) out[c * size + k] = a.getComponent(first[c]!, k)
+    g.setAttribute(name, new THREE.BufferAttribute(out, size, a.normalized))
   }
   const src = geo.index
   const tris = src ? src.count / 3 : n / 3
@@ -77,12 +78,11 @@ export function decimate(geo: THREE.BufferGeometry, cell: number): THREE.BufferG
     seen.add(key)
     out.push(a, b, c)
   }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(P, 3))
-  if (N) g.setAttribute('normal', new THREE.BufferAttribute(N, 3))
-  if (U) g.setAttribute('uv', new THREE.BufferAttribute(U, 2))
   g.setIndex(m > 65535 ? new THREE.Uint32BufferAttribute(out, 1) : new THREE.Uint16BufferAttribute(out, 1))
-  g.computeBoundingSphere()
+  // Groups (several materials on one geometry) do not survive clustering; a mesh with them keeps its own geometry.
+  if (geo.boundingSphere) g.boundingSphere = geo.boundingSphere.clone()
+  else g.computeBoundingSphere()
+  if (geo.boundingBox) g.boundingBox = geo.boundingBox.clone()
   return g
 }
 

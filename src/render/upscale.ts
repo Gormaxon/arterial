@@ -46,7 +46,23 @@ uniform float uPulse;
 uniform float uStrength;
 uniform float uAspect;
 uniform float uRcas;
+uniform float uConcuss;
+uniform float uShock;
+uniform vec2 uShockAt;
+// The crosshair and the visor's compass tape, drawn here rather than as page elements over the canvas (Upscaler.hud).
+uniform vec2 uRes;
+uniform float uCss;
+uniform vec4 uCh;
+uniform float uVisorA;
+uniform sampler2D tTape;
+uniform vec4 uTape;
+uniform vec3 uTapeTex;
 varying vec2 vUv;
+
+float sdBox(vec2 p, vec2 c, vec2 b) {
+  vec2 q = abs(p - c) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
 
 // Hash without sin(): stable across GPUs, and cheap.
 float hash(vec2 p) {
@@ -56,12 +72,25 @@ float hash(vec2 p) {
 }
 
 void main() {
+  // --- a blast close by (see Upscaler.concuss) ---------------------------------------
+  // The shock front: a ring of bent light racing out across the view from where it went off. Then the concussion: the
+  // view swimming, doubled and smeared, settling over seconds.
+  vec2 uv = vUv;
+  if (uConcuss > 0.0) {
+    vec2 fromBlast = (vUv - uShockAt) * vec2(uAspect, 1.0);
+    float rd = length(fromBlast);
+    float front = uShock * 2.2;
+    float ring = exp(-pow((rd - front) * 9.0, 2.0)) * (1.0 - smoothstep(0.0, 0.9, uShock));
+    uv -= normalize(fromBlast + 1e-5) / vec2(uAspect, 1.0) * ring * 0.035 * uConcuss;
+    float sway = uConcuss * uConcuss;
+    uv += vec2(sin(vUv.y * 7.0 + uTime * 2.6), cos(vUv.x * 6.0 + uTime * 2.1)) * 0.01 * sway;
+  }
   // A cross of five taps one SOURCE texel apart.
-  vec3 c = texture2D(tFrame, vUv).rgb;
-  vec3 n = texture2D(tFrame, vUv + vec2(0.0, texel.y)).rgb;
-  vec3 s = texture2D(tFrame, vUv - vec2(0.0, texel.y)).rgb;
-  vec3 e = texture2D(tFrame, vUv + vec2(texel.x, 0.0)).rgb;
-  vec3 w = texture2D(tFrame, vUv - vec2(texel.x, 0.0)).rgb;
+  vec3 c = texture2D(tFrame, uv).rgb;
+  vec3 n = texture2D(tFrame, uv + vec2(0.0, texel.y)).rgb;
+  vec3 s = texture2D(tFrame, uv - vec2(0.0, texel.y)).rgb;
+  vec3 e = texture2D(tFrame, uv + vec2(texel.x, 0.0)).rgb;
+  vec3 w = texture2D(tFrame, uv - vec2(texel.x, 0.0)).rgb;
 #ifdef FSR_RCAS
   // AMD FSR 1 RCAS (FsrRcasF, ffx_fsr1.h, MIT): the sharpening FSR follows its upscale with. The lobe is the
   // largest negative weight that cannot push any channel past black or white, capped at FSR_RCAS_LIMIT.
@@ -90,11 +119,25 @@ void main() {
   // Colour fringing: red pushed out, blue pulled in, growing with the square of the
   // distance from the middle, so the crosshair sits on a clean image. The sharpening
   // delta rides along on each shifted channel, so the detail is not lost to the shift.
-  vec2 shift = d * (0.0055 * r2 + 0.012 * uPulse) * uStrength;
+  vec2 shift = d * (0.0055 * r2 + 0.012 * uPulse + 0.03 * uConcuss) * uStrength;
   vec3 detail = outc - c;
-  float rr = texture2D(tFrame, vUv + shift).r;
-  float bb = texture2D(tFrame, vUv - shift).b;
+  float rr = texture2D(tFrame, uv + shift).r;
+  float bb = texture2D(tFrame, uv - shift).b;
   outc = vec3(rr + detail.r, outc.g, bb + detail.b);
+  if (uConcuss > 0.0) {
+    // Seeing double, the second image drifting off and back; and smeared, as if the eyes will not focus.
+    float k = uConcuss;
+    vec2 ghost = vec2(sin(uTime * 1.7), cos(uTime * 1.3)) * 0.024 * k;
+    vec3 doubled = texture2D(tFrame, uv + ghost).rgb;
+    vec2 br = texel * (2.0 + 14.0 * k);
+    vec3 smear = (texture2D(tFrame, uv + vec2(br.x, br.y)).rgb + texture2D(tFrame, uv - vec2(br.x, br.y)).rgb
+      + texture2D(tFrame, uv + vec2(br.x, -br.y)).rgb + texture2D(tFrame, uv - vec2(br.x, -br.y)).rgb) * 0.25;
+    outc = mix(outc, smear, min(1.0, 0.85 * k));
+    outc = mix(outc, doubled, 0.4 * k);
+    // The colour knocked out of it, and the edges closing in.
+    outc = mix(outc, vec3(dot(outc, vec3(0.299, 0.587, 0.114))), 0.45 * k);
+    outc *= 1.0 - 0.5 * smoothstep(0.05, 0.4, r2) * k;
+  }
 
   float luma = dot(outc, vec3(0.299, 0.587, 0.114));
   // Sensor grain: heavier in the dark where a sensor is noisiest, redrawn every frame.
@@ -112,6 +155,44 @@ void main() {
   outc *= 1.0 - 0.15 * smoothstep(0.1, 0.4, r2) * uStrength;
   // The optics coming online: a flash of brightness with the static.
   outc += uPulse * 0.09 * uStrength;
+
+  // --- the HUD's moving parts (Upscaler.hud), in CSS pixels from the top left ---------------------------------
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y) / uCss;
+  float aa = 0.75 / uCss;
+  // The compass tape: its strip of ticks and labels (drawn once, Visor.tapeCanvas), slid to the heading, fading at
+  // both ends as the page's mask did.
+  if (uVisorA > 0.0 && px.x >= uTape.x && px.x < uTape.x + uTape.z && px.y >= uTape.y && px.y < uTape.y + uTape.w) {
+    vec2 q = px - uTape.xy;
+    float tx = (uTapeTex.z + q.x - uTape.z * 0.5) / uTapeTex.x;
+    vec4 tc = texture2D(tTape, vec2(tx, 1.0 - q.y / uTapeTex.y));
+    float u = q.x / uTape.z;
+    float fade = clamp(min(u, 1.0 - u) / 0.2, 0.0, 1.0);
+    outc = mix(outc, tc.rgb, tc.a * fade * uVisorA);
+  }
+  // The crosshair: four ticks (gap uCh.x), the red dot, the lock-on frame; a dark edge and a green glow round each.
+  if (uCh.y > 0.0) {
+    vec2 p = px - uRes * 0.5 / uCss;
+    float gap = uCh.x;
+    float len = 8.0;
+    float ticks = min(min(sdBox(p, vec2(0.0, -gap - len * 0.5), vec2(1.0, len * 0.5)), sdBox(p, vec2(0.0, gap + len * 0.5), vec2(1.0, len * 0.5))),
+      min(sdBox(p, vec2(-gap - len * 0.5, 0.0), vec2(len * 0.5, 1.0)), sdBox(p, vec2(gap + len * 0.5, 0.0), vec2(len * 0.5, 1.0))));
+    float out1 = max(0.0, gap + len + 14.0 - 30.0);
+    vec2 a = abs(p);
+    float o = 30.0 + out1;
+    float frame = min(sdBox(a, vec2(o - 5.0, o - 0.75), vec2(5.0, 0.75)), sdBox(a, vec2(o - 0.75, o - 5.0), vec2(0.75, 5.0)));
+    float halo = min(ticks, frame);
+    // (As the page drew it: drop-shadow 1.5 px black, 4 px green at a third — soft falloffs, not solid bands.)
+    float edge = 0.95 * pow(1.0 - smoothstep(0.0, 1.5, halo), 2.0);
+    float glow = 0.35 * pow(1.0 - smoothstep(0.0, 4.0, halo), 2.0);
+    outc = mix(outc, vec3(0.0), edge * 0.5 * uCh.y);
+    outc = mix(outc, vec3(0.353, 1.0, 0.549), glow * 0.45 * uCh.y);
+    vec3 tick = mix(vec3(0.769, 1.0, 0.827), vec3(1.0), uCh.z);
+    outc = mix(outc, tick, (1.0 - smoothstep(-aa, aa, frame)) * 0.62 * uCh.y);
+    outc = mix(outc, tick, (1.0 - smoothstep(-aa, aa, ticks)) * uCh.y);
+    float dot = length(p) - 1.5;
+    outc = mix(outc, mix(vec3(1.0, 0.231, 0.329), vec3(1.0), uCh.z), 0.9 * (1.0 - smoothstep(0.0, 5.0, max(dot, 0.0))) * 0.5 * uCh.y);
+    outc = mix(outc, mix(vec3(1.0, 0.231, 0.329), vec3(1.0), uCh.z), (1.0 - smoothstep(-aa, aa, dot)) * uCh.y);
+  }
 
   gl_FragColor = vec4(clamp(outc, 0.0, 1.0), 1.0);
 }`
@@ -161,6 +242,11 @@ export class Upscaler {
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
   private readonly material: THREE.ShaderMaterial
   private pulseAmount = 0
+  /** How concussed the view is, 0..1, settling back on its own (see `concuss`). */
+  private concussion = 0
+  /** Seconds since the last blast's shock front set out across the view, and where on screen it set out from. */
+  private shockT = 9
+  private readonly shockAt = new THREE.Vector2(0.5, 0.5)
   private strength = 1
   /**
    * AMD FSR 1 (experimental): the frame is upscaled to the canvas by EASU into `easu`, and the present pass
@@ -193,9 +279,19 @@ export class Upscaler {
         sharpness: { value: 0.5 },
         uTime: { value: 0 },
         uPulse: { value: 0 },
+        uConcuss: { value: 0 },
+        uShock: { value: 1 },
+        uShockAt: { value: new THREE.Vector2(0.5, 0.5) },
         uStrength: { value: 1 },
         uAspect: { value: 16 / 9 },
         uRcas: { value: Math.pow(2, -RCAS_STOPS) },
+        uRes: { value: new THREE.Vector2(1, 1) },
+        uCss: { value: 1 },
+        uCh: { value: new THREE.Vector4(5, 0, 0, 0) },
+        uVisorA: { value: 0 },
+        tTape: { value: null },
+        uTape: { value: new THREE.Vector4() },
+        uTapeTex: { value: new THREE.Vector3(1, 1, 0) },
       },
       depthTest: false,
       depthWrite: false,
@@ -266,6 +362,10 @@ export class Upscaler {
 
   /** The framebuffer three made for a target, made now if it has not been yet. */
   private framebufferOf(t: THREE.WebGLRenderTarget): WebGLFramebuffer {
+    // Already made (the usual case): read, not set — setting a render target is a good deal of three.js's work for a
+    // handle it already has, three times a frame, on a machine without the browser's optimising compiler.
+    const made = (this.renderer.properties.get(t) as { __webglFramebuffer?: WebGLFramebuffer }).__webglFramebuffer
+    if (made) return made
     this.renderer.setRenderTarget(t)
     return (this.renderer.properties.get(t) as { __webglFramebuffer: WebGLFramebuffer }).__webglFramebuffer
   }
@@ -315,6 +415,17 @@ export class Upscaler {
     this.pulseAmount = Math.max(this.pulseAmount, amount)
   }
 
+  /**
+   * A blast close by: the shock front racing out across the view from where it went off (`at`, 0..1 across and up the
+   * screen; the middle if it was behind you), then the view swimming — doubled, smeared, drained of colour, closed in —
+   * and settling over a few seconds. `amount` 0..1: the nearer the blast, the harder and longer.
+   */
+  concuss(amount: number, at?: { x: number; y: number }): void {
+    this.concussion = Math.max(this.concussion, Math.min(1, amount))
+    this.shockT = 0
+    this.shockAt.set(at?.x ?? 0.5, at?.y ?? 0.5)
+  }
+
   /** Start drawing a frame into the offscreen buffer. */
   begin(): void {
     this.ensureMsaa()
@@ -344,11 +455,46 @@ export class Upscaler {
    * sharpening is applied; the more it is stretched, the more it gets. `dt` is seconds
    * since the last frame, for the static's decay.
    */
+  /**
+   * The HUD's moving parts, drawn by the present pass: the crosshair (its gap in CSS px, its opacity, white for a hit)
+   * and the visor's compass tape (shown or not, and how far along its strip the heading is, CSS px). On a page they
+   * were the elements changing every frame over the canvas, and every change cost the page a restyle and a repaint.
+   */
+  readonly hud = { gap: 5, crosshair: 0, hit: 0, visor: 0, tapeX: 0 }
+  private tapeTexture: THREE.CanvasTexture | null = null
+
+  /** The compass tape's strip (drawn once, Visor.tapeCanvas), where the tape stands on the page (CSS px). */
+  setTape(canvas: HTMLCanvasElement, cssWidth: number, cssHeight: number, rect: { x: number; y: number; width: number; height: number }): void {
+    this.tapeTexture?.dispose()
+    const t = new THREE.CanvasTexture(canvas)
+    t.minFilter = THREE.LinearFilter
+    t.generateMipmaps = false
+    t.colorSpace = THREE.NoColorSpace
+    this.tapeTexture = t
+    const u = this.material.uniforms
+    u.tTape!.value = t
+    ;(u.uTapeTex!.value as THREE.Vector3).set(cssWidth, cssHeight, 0)
+    ;(u.uTape!.value as THREE.Vector4).set(rect.x, rect.y, rect.width, rect.height)
+  }
+
   present(upscale: number, dt = 1 / 60): void {
     const u = this.material.uniforms
+    const out = this.renderer.getDrawingBufferSize(this.outSize)
+    ;(u.uRes!.value as THREE.Vector2).copy(out)
+    // Canvas pixels per CSS pixel (read from the page it would make the page lay itself out).
+    u.uCss!.value = this.renderer.getPixelRatio()
+    ;(u.uCh!.value as THREE.Vector4).set(this.hud.gap, this.hud.crosshair, this.hud.hit, 0)
+    u.uVisorA!.value = this.tapeTexture ? this.hud.visor : 0
+    ;(u.uTapeTex!.value as THREE.Vector3).z = this.hud.tapeX
     u.sharpness!.value = Math.max(0, Math.min(1, (upscale - 1) * 1.6 + 0.2))
     this.pulseAmount = Math.max(0, this.pulseAmount - dt * 1.7)
     u.uPulse!.value = this.pulseAmount
+    // Settles over about four seconds from the worst; the shock front is gone in under one.
+    this.concussion = Math.max(0, this.concussion - dt * 0.24)
+    this.shockT += dt
+    u.uConcuss!.value = this.concussion
+    u.uShock!.value = Math.min(1, this.shockT / 0.6)
+    ;(u.uShockAt!.value as THREE.Vector2).copy(this.shockAt)
     u.uStrength!.value = this.strength
     // Wrapped so the float stays precise over a long session.
     u.uTime!.value = (performance.now() / 1000) % 600

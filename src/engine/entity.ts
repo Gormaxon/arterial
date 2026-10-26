@@ -39,6 +39,8 @@ export abstract class Entity {
   /** Transform holder. Visual entities parent their meshes to this. */
   readonly object = new THREE.Object3D()
   enabled = true
+  /** Made while the game runs (an enemy a spawner put out), not part of the level: never saved with it. */
+  transient = false
 
   /** Set by World.add(). Entities may assume it exists from onSpawn() onward. */
   world!: World
@@ -49,6 +51,17 @@ export abstract class Entity {
   readonly isStatic: boolean = true
   /** Opt in to per-tick updates, so the update list stays as short as possible. */
   readonly needsUpdate: boolean = false
+  /**
+   * Updated once per drawn frame (with all the time since its last update) rather than at every simulation step.
+   * For what nothing has to resolve against step by step — an enemy, a sentry — so that a slow frame, which takes
+   * many steps to catch up, does not pay for it many times over and make the next frame slower still. Read every
+   * step, so it may change. Only while the game drives frames (World.beginFrame); otherwise it is every step.
+   */
+  get tickPerFrame(): boolean {
+    return false
+  }
+  /** Seconds owed to a per-frame entity since its last update (World's book-keeping). */
+  frameOwed = 0
 
   constructor(def: EntityDef) {
     this.id = def.id ?? ''

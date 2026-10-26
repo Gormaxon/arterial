@@ -45,6 +45,10 @@ compiled down) and on the GPU, and that buys it a lot:
   phase's line), an untouchable entrance and per-phase guard time, all announced on the event bus (`boss:start`,
   `boss:phase`, `boss:health`, `boss:defeated[:<id>]`, `boss:reset`). The boss itself — model, moves, attacks — is
   the game's: an entity that owns a `BossEncounter` and acts on its state.
+- More than one level: a `LevelSet` of levels in order (each a file in hand, or a function that fetches or builds
+  one), loaded by id, and gone on from by an event from anything in a level — `level:exit` to the next,
+  `level:goto:<id>` to a named one — with `level:loading` / `level:loaded` / `level:complete` / `levels:finished`
+  announced and reached/finished progress saved as plain data.
 - What surfaces are made of (stone, steel, grating, lava), for sounds and ricochets.
 
 **physics/** — the collision system: a BVH over the baked level, moving bodies, ray casts, capsule tests.

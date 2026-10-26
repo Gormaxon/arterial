@@ -26,7 +26,7 @@ import { surfaceLayer } from '../render/levelmaterial'
 
 /** Parts whose longest side is under this are fine detail: drawn only near the camera. */
 /** Two well-mixed bytes from a position: a piece's shade (low byte) and warm/cool cast (next byte). */
-function toneOf(x: number, y: number, z: number): number {
+export function toneOf(x: number, y: number, z: number): number {
   let h = Math.imul(Math.round(x * 2) | 0, 73856093) ^ Math.imul(Math.round(y * 2) | 0, 19349663) ^ Math.imul(Math.round(z * 2) | 0, 83492791)
   h = Math.imul(h ^ (h >>> 16), 0x85ebca6b)
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35)

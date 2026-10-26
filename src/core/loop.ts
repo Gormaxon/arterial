@@ -12,7 +12,12 @@
  * faster than the display only spent the processor on frames nobody saw, and a slow machine lost frames to it.
  */
 
-export const SIM_HZ = 120
+/**
+ * Simulation steps a second. 60, one a frame on a 60 Hz panel (frames are drawn between steps, interpolated): at 120 a
+ * frame carried two whole steps — the player, every round in flight, the doors and triggers — and on the Chromebook,
+ * which runs without the browser's optimising compiler, the second was over a millisecond of every frame.
+ */
+export const SIM_HZ = 60
 export const SIM_DT = 1 / SIM_HZ
 
 /**
@@ -38,13 +43,32 @@ export interface LoopStats {
   renderMs: number
   /** Fixed steps run this frame. Persistently > 1 means we are below SIM_HZ. */
   steps: number
+  /** How long after the display's tick (the frame's timestamp) the frame was called, ms: the thread was busy before it. */
+  lateMs: number
+  /** The whole frame's work, ms: everything from being called to handing back, the simulation and render() included. */
+  workMs: number
 }
 
 export class Loop {
-  readonly stats: LoopStats = { fps: 0, frameMs: 0, simMs: 0, renderMs: 0, steps: 0 }
+  readonly stats: LoopStats = { fps: 0, frameMs: 0, simMs: 0, renderMs: 0, steps: 0, lateMs: 0, workMs: 0 }
+  /** When this frame's work began (performance.now): what it has cost so far is the time since. */
+  frameStart = 0
+  /** Called at the very end of each displayed frame, its stats complete (the play benchmark's log). */
+  afterFrame: (() => void) | null = null
+  /**
+   * Called once each simulated frame is drawn, still inside its work (stats.workMs) but outside its simulation and
+   * drawing times: work that takes whatever the frame has left (World.navSlice).
+   */
+  endFrame: (() => void) | null = null
 
   /** False stops the simulation (and the per-frame input read) while frames carry on being drawn. */
   simulate = true
+  /**
+   * A hit-stop: until this moment (performance.now) the simulation runs at `holdScale` of real time. Frames are still
+   * drawn and the per-frame input still read, so the view never locks — only the world stops on the blow for a beat.
+   */
+  private holdUntil = 0
+  private holdScale = 1
 
   private accumulator = 0
   private last = 0
@@ -96,21 +120,43 @@ export class Loop {
 
     const frameMs = now - this.last
     this.last = now
+    const start = performance.now()
+    this.stats.lateMs = start - now
     this.step(frameMs)
+    this.stats.workMs = performance.now() - start
+    this.afterFrame?.()
   }
 
   /**
    * One frame of `frameMs`, driven by hand instead of by the display: a harness films the game frame by frame this
    * way with the loop stopped, at an exact frame rate a headless browser could never keep up with.
    */
+  /**
+   * Slow the world to `scale` of real time for `ms` milliseconds: the beat a heavy blow lands on, as slasher games do. A
+   * hold already running is extended, never shortened, and the slower of the two wins.
+   */
+  hold(ms: number, scale = 0.05): void {
+    const now = performance.now()
+    if (now >= this.holdUntil) this.holdScale = scale
+    else this.holdScale = Math.min(this.holdScale, scale)
+    this.holdUntil = Math.max(this.holdUntil, now + ms)
+  }
+
+  /** Is a hit-stop holding the world right now? */
+  get holding(): boolean {
+    return performance.now() < this.holdUntil
+  }
+
   advance(frameMs: number): void {
     this.step(frameMs)
   }
 
   private step(frameMs: number): void {
+    this.frameStart = performance.now()
     if (this.simulate) {
       // Clamp the delta itself as well: a single 5 s hitch should resume, not fast-forward.
-      this.accumulator += Math.min(frameMs, 250) / 1000
+      const scale = performance.now() < this.holdUntil ? this.holdScale : 1
+      this.accumulator += (Math.min(frameMs, 250) / 1000) * scale
       this.beginFrame?.()
     } else {
       this.accumulator = 0
@@ -131,6 +177,7 @@ export class Loop {
     const renderStart = performance.now()
     this.render(this.accumulator / SIM_DT)
     const renderMs = performance.now() - renderStart
+    if (this.simulate) this.endFrame?.()
 
     const s = this.stats
     const instantFps = frameMs > 0 ? 1000 / frameMs : 0

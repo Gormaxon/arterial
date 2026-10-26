@@ -139,7 +139,7 @@ export class DynamicResolution {
   private fixedRatio: number | null = null
 
   get ratio(): number {
-    return this.fixedRatio ?? this.levels[this.index]!
+    return this.fixedRatio !== null ? this.fixedRatio : this.levels[this.index]!
   }
 
   /** True while a ratio is fixed and the controller is standing aside. */

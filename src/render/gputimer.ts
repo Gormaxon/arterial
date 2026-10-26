@@ -21,10 +21,15 @@ export class GpuTimer {
   ms: number | null = null
   /** Smoothed milliseconds per pass. */
   readonly passMs: Record<GpuPass, number | null> = { world: null, hands: null, fx: null, post: null }
+  /** The last frame's own reading, unsmoothed, and a count that goes up with each one (the play benchmark's log). */
+  readonly lastPassMs: Record<GpuPass, number> = { world: 0, hands: 0, fx: 0, post: 0 }
+  lastMs = 0
+  readings = 0
   private readonly ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null
   private readonly pending: Pending[] = []
   private frame: Pending | null = null
   private open: WebGLQuery | null = null
+  private tick = 0
 
   constructor(private readonly gl: WebGL2RenderingContext) {
     this.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2') as GpuTimer['ext']
@@ -33,6 +38,10 @@ export class GpuTimer {
   /** Start timing a frame. Skipped while too many earlier frames are still waiting for their results. */
   begin(): void {
     if (!this.ext || this.frame || this.pending.length > 3) return
+    // One frame in sixteen: the queries are calls to the graphics process (four a frame, made and read back, and a
+    // synchronous one when a frame's results come in — most of a millisecond each on the Chromebook), and the figure is
+    // a smoothed average either way: four readings a second are plenty for it.
+    if (++this.tick % 16 !== 0) return
     this.frame = { queries: [] }
   }
 
@@ -82,6 +91,9 @@ export class GpuTimer {
         this.passMs[p] = prev === null ? sums[p] : prev * 0.9 + sums[p] * 0.1
       }
       this.ms = this.ms === null ? total : this.ms * 0.9 + total * 0.1
+      for (const p of PASSES) this.lastPassMs[p] = sums[p]
+      this.lastMs = total
+      this.readings++
     }
   }
 }

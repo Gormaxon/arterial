@@ -217,6 +217,12 @@ export class RampTable {
     return row
   }
 
+  /** The sprite style a layer's rows were baked for (bake): what a particle in the shared sprite batch is. */
+  spriteStyle(row: number): 'soft' | 'smoke' | 'glow' {
+    const k = (Math.round(row) + 2) * RAMP_W * 4
+    return this.data[k + 10]! > 0.5 ? 'glow' : this.data[k + 11]! > 0.5 ? 'smoke' : 'soft'
+  }
+
   get layersUsed(): number {
     return this.rowsUsed / ROWS_PER_LAYER
   }
@@ -252,7 +258,7 @@ export class RampTable {
       d[z + 3] = 0
     }
     // Constants: [turbulence, turbulence frequency, streak stretch, bounce], [tracer length, quadratic drag, lick
-    // sprite, billow], [tracer tumble, tracer length in seconds, -, -].
+    // sprite, billow], [tracer tumble, tracer length in seconds, additive sprite, shaded sprite].
     const k = (row + 2) * RAMP_W * 4
     d[k] = layer.turbulence ?? 0
     d[k + 1] = layer.turbulenceFreq ?? 1.4
@@ -264,6 +270,10 @@ export class RampTable {
     d[k + 7] = layer.billow ?? 0
     d[k + 8] = layer.tumble ?? 0
     d[k + 9] = layer.lengthTime ?? 0
+    // How a sprite style is drawn, for the one batch all three share (batches.ts SpriteBatch, mixed): added on (glow),
+    // and lit from above (smoke).
+    d[k + 10] = style === 'glow' ? 1 : 0
+    d[k + 11] = style === 'smoke' ? 1 : 0
     this.texture.needsUpdate = true
   }
 }

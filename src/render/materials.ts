@@ -58,6 +58,12 @@ export const SURFACE_LOOKS: Record<SurfaceKey, Look> = {
 
 const cache = new Map<SurfaceKey, THREE.Material>()
 
+/** The surface a material from getMaterial is (undefined: not one of them). */
+export function surfaceOf(material: THREE.Material): SurfaceKey | undefined {
+  for (const [key, m] of cache) if (m === material) return key
+  return undefined
+}
+
 export function getMaterial(key: SurfaceKey): THREE.Material {
   const hit = cache.get(key)
   if (hit) return hit
@@ -105,8 +111,11 @@ export function animateSurfaces(elapsed: number): void {
 
   const u = elapsed * 0.013
   const v = elapsed * 0.021
+  // (Its matrix worked out here: the level holds every texture's still while it is played, World.freezeStill.)
   if (mat.map) mat.map.offset.set(u, v)
   if (mat.normalMap) mat.normalMap.offset.set(u, v)
+  mat.map?.updateMatrix()
+  mat.normalMap?.updateMatrix()
   // Two detuned waves, so the glow never settles into an obvious loop.
   const pulse = Math.sin(elapsed * 1.1) * 0.5 + Math.sin(elapsed * 0.37) * 0.3
   mat.emissiveIntensity = 2.1 + pulse * 0.42

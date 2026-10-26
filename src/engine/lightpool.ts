@@ -25,8 +25,8 @@ interface Slot {
   target: number
 }
 
-/** How many point lights are ever live at once. */
-export const POINT_LIGHT_BUDGET = 6
+/** How many point lights are ever live at once: every lit pixel pays for each, and a sealed room needs its own lamp or two. */
+export const POINT_LIGHT_BUDGET = 3
 /** Fades take about this long, seconds. */
 const FADE = 0.25
 

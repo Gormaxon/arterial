@@ -23,15 +23,29 @@ import type { Buildable } from '../entities/buildable'
 import type { CollisionSystem } from '../physics/collision'
 import { getLevelDepthMaterial, getLevelMaterial } from '../render/levelmaterial'
 import { bakeCell, warmTemplates, type Want } from './bake'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
 /** Side of a cell, metres. Big enough that a view covers few of them, small enough to cull usefully. */
 export const CELL_SIZE = 96
 /** How near the camera has to be to a cell for it to have its fine detail, metres. */
 export const DETAIL_RANGE = 80
 /** A built layer is let go once the camera is this much farther than it was built for, so hovering at an edge does not rebuild it every frame. */
+/**
+ * The depth pass's draw order: before everything else opaque in the same drawing of the scene (depthScene is drawn as
+ * part of the scene, not on its own: a drawing of its own was a whole walk, sort and set-up for one draw).
+ */
+export const DEPTH_FIRST = -1000
 const RELEASE_MARGIN = 60
 /** A camera that moves farther than this in one frame has jumped: the streaming budget is lifted to catch up. */
 const JUMP = 40
+/**
+ * A level of no more cells than this is drawn MERGED in play: all of its structure in one mesh, all of its detail in
+ * another, one depth copy — three draws, where it was one a cell a layer (sixteen for the facility), each of them a
+ * fifth of a millisecond of a Chromebook's processor. Baked from every cell's buildables at once (mergeNow) when the
+ * level loads or build mode closes; while building, each cell is drawn as itself (an edit bakes one cell, not the level).
+ */
+const MERGE_MAX_CELLS = 12
+
 /** Budget for streaming per frame, ms, in normal play. */
 const FRAME_BUDGET = 5
 /** And right after a jump. */
@@ -93,7 +107,105 @@ export class StaticChunks {
    * the nearest surface's depth already laid down, every pixel is shaded once. A scene of its own, so the main
    * scene's lights are not set up twice a frame.
    */
-  readonly depthScene = new THREE.Scene()
+  readonly depthScene = StaticChunks.stillScene()
+  /** A scene that is never moved (its meshes are in world space): left out of drawing's walk (World.walkedScene). */
+  private static stillScene(): THREE.Scene {
+    const s = new THREE.Scene()
+    s.matrixAutoUpdate = false
+    s.matrixWorldAutoUpdate = false
+    return s
+  }
+
+  /** May the level be drawn merged now (not while it is being built: World.building). */
+  mergeAllowed = true
+  /** Changes whenever a cell's contents do (rebuild, removed, cleared): the merged meshes are of one version. */
+  private version = 0
+  private mergedVersion = -1
+  private readonly merged: { structure: THREE.Mesh | null; detail: THREE.Mesh | null; depth: THREE.Mesh | null } = { structure: null, detail: null, depth: null }
+
+  /** Is the level drawn merged right now? */
+  get isMerged(): boolean {
+    return this.mergedVersion >= 0
+  }
+
+  /**
+   * Draw the level merged (see MERGE_MAX_CELLS), baked afresh if its cells have changed since; or each cell as itself,
+   * where merging is not allowed or the level is too big. Cheap to call every frame when nothing has changed.
+   */
+  mergeNow(): void {
+    if (!this.mergeAllowed || this.cellList.length === 0 || this.cellList.length > MERGE_MAX_CELLS) {
+      this.unmerge()
+      return
+    }
+    if (this.mergedVersion === this.version) return
+    this.unmerge()
+    const all: Buildable[] = []
+    for (const c of this.cellList) all.push(...c.entities)
+    const geos: Partial<Record<'structure' | 'detail', THREE.BufferGeometry>> = {}
+    for (const layer of ['structure', 'detail'] as const) {
+      const baked = bakeCell(all, this.indexOf, this.layerWant(layer))
+      const l = baked.layers[0]
+      if (l) geos[layer] = l.geometry
+    }
+    // The depth pass, of the structure alone (its big surfaces are what hide the rest).
+    if (geos.structure) {
+      const depth = this.levelMesh(geos.structure.clone(), getLevelDepthMaterial())
+      depth.renderOrder = DEPTH_FIRST
+      this.depthScene.add(depth)
+      this.merged.depth = depth
+    }
+    // Structure and detail drawn as ONE mesh: both in the level's material, both always shown when merged — two draws
+    // where one does (a draw is a quarter of a millisecond of a Chromebook's processor).
+    const both = geos.structure && geos.detail ? mergeGeometries([geos.structure, geos.detail], false) : null
+    if (both) {
+      geos.structure!.dispose()
+      geos.detail!.dispose()
+      const mesh = this.levelMesh(both, getLevelMaterial())
+      this.scene.add(mesh)
+      this.merged.structure = mesh
+    } else {
+      for (const layer of ['structure', 'detail'] as const) {
+        const g = geos[layer]
+        if (!g) continue
+        const mesh = this.levelMesh(g, getLevelMaterial())
+        this.scene.add(mesh)
+        this.merged[layer] = mesh
+      }
+    }
+    this.mergedVersion = this.version
+    this.showCells(false)
+  }
+
+  /** Back to each cell drawn as itself. */
+  private unmerge(): void {
+    if (this.mergedVersion < 0 && !this.merged.structure && !this.merged.detail) return
+    for (const k of ['structure', 'detail', 'depth'] as const) {
+      const m = this.merged[k]
+      if (!m) continue
+      m.parent?.remove(m)
+      m.geometry.dispose()
+      this.merged[k] = null
+    }
+    this.mergedVersion = -1
+    this.showCells(true)
+  }
+
+  private showCells(on: boolean): void {
+    for (const c of this.cellList) {
+      if (c.structure) c.structure.visible = on
+      if (c.detail) c.detail.visible = on
+      if (c.structureDepth) c.structureDepth.visible = on
+    }
+  }
+
+  /** A mesh of the level's drawn geometry: never ray-cast (the collision answers that), its CPU copies dropped once on the GPU. */
+  private levelMesh(geometry: THREE.BufferGeometry, material: THREE.Material): THREE.Mesh {
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.matrixAutoUpdate = false
+    mesh.raycast = () => {}
+    for (const a of [...Object.values(geometry.attributes), geometry.index!] as THREE.BufferAttribute[]) a.onUpload(() => void ((a as unknown as { array: unknown }).array = null))
+    return mesh
+  }
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -152,6 +264,8 @@ export class StaticChunks {
 
   /** Drop every cell and forget every index. */
   clear(): void {
+    this.unmerge()
+    this.version++
     for (const cell of this.cellList) this.disposeCell(cell)
     this.cells.clear()
     this.cellList = []
@@ -254,10 +368,14 @@ export class StaticChunks {
     for (const a of [...Object.values(l.geometry.attributes), l.geometry.index!] as THREE.BufferAttribute[]) a.onUpload(() => void ((a as unknown as { array: unknown }).array = null))
     this.scene.add(mesh)
     cell[layer] = mesh
+    // Not drawn while the level is drawn merged (its own copy is in the merged mesh).
+    mesh.visible = !this.isMerged
     if (layer === 'structure') {
       const depth = new THREE.Mesh(l.geometry, getLevelDepthMaterial())
       depth.matrixAutoUpdate = false
+      depth.renderOrder = DEPTH_FIRST
       depth.raycast = mesh.raycast
+      depth.visible = !this.isMerged
       this.depthScene.add(depth)
       cell.structureDepth = depth
       cell.structureTriangles = baked.renderTriangles
@@ -269,6 +387,7 @@ export class StaticChunks {
 
   /** (Re)build a cell's contents after its buildables changed: collision at once, and any layers it has. */
   private rebuild(key: string, list: Buildable[], signature: string): void {
+    this.version++
     const old = this.cells.get(key)
     const cell: Cell = old ?? {
       key,
@@ -303,6 +422,7 @@ export class StaticChunks {
   }
 
   private removeGone(gone: string[]): void {
+    if (gone.length > 0) this.version++
     for (const k of gone) {
       const cell = this.cells.get(k)!
       this.disposeCell(cell)
@@ -313,13 +433,22 @@ export class StaticChunks {
 
   // --- streaming ---------------------------------------------------------------
 
+  /**
+   * How near a cell's detail is built. While the level is drawn merged (in play, a level small enough to), all of it, from the start, and none let
+   * go: a cell built or let go there changes the level, and the merged mesh is then baked again whole — 40 to 75 ms on
+   * the frame you walked into a new room. (The facility's detail is some 25,000 triangles in all.)
+   */
+  private get detailRange(): number {
+    return this.mergeAllowed && this.cellList.length > 0 && this.cellList.length <= MERGE_MAX_CELLS ? Infinity : DETAIL_RANGE
+  }
+
   /** The layers the focus wants that a cell lacks, nearest first. */
   private missing(): { cell: Cell; layer: Layer; d: number }[] {
     const out: { cell: Cell; layer: Layer; d: number }[] = []
     for (const cell of this.cellList) {
       const d = cell.bounds.distanceToPoint(this.focus)
       if (!cell.structureReady && d < this.drawDistance) out.push({ cell, layer: 'structure', d })
-      if (!cell.detailReady && d < DETAIL_RANGE) out.push({ cell, layer: 'detail', d })
+      if (!cell.detailReady && d < this.detailRange) out.push({ cell, layer: 'detail', d })
     }
     return out.sort((a, b) => a.d - b.d)
   }
@@ -328,7 +457,7 @@ export class StaticChunks {
     for (const cell of this.cellList) {
       const d = cell.bounds.distanceToPoint(this.focus)
       if (cell.structureReady && d > this.drawDistance + RELEASE_MARGIN) this.disposeLayer(cell, 'structure')
-      if (cell.detailReady && d > DETAIL_RANGE + RELEASE_MARGIN) this.disposeLayer(cell, 'detail')
+      if (cell.detailReady && d > this.detailRange + RELEASE_MARGIN) this.disposeLayer(cell, 'detail')
     }
   }
 
@@ -364,6 +493,7 @@ export class StaticChunks {
     this.lastCamera.copy(camera)
     this.focus.copy(camera)
     this.releaseFar()
+    this.mergeNow()
     const todo = this.missing()
     if (todo.length === 0) return
     const budget = jumped ? JUMP_BUDGET : FRAME_BUDGET

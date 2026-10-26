@@ -20,7 +20,7 @@ import * as THREE from 'three'
 import type { EventBus } from '../events'
 import { addLive } from '../../render/live'
 import { floorHitTime, trajectory } from './curves'
-import { Batch, FireballBatch, SpriteBatch, StreakBatch, STRIDE, TracerBatch, type SharedUniforms } from './batches'
+import { Batch, FireballBatch, MIXED_BLENDING, SpriteBatch, StreakBatch, STRIDE, TracerBatch, type SharedUniforms } from './batches'
 import { ChunkPool } from './chunks'
 import { EffectRegistry, pick, RampTable, type CompiledEffect, type CompiledLayer, type EffectDef, type ParticleStyle } from './effects'
 
@@ -69,8 +69,6 @@ export class ParticleEmitter {
   constructor(public effect: string) {}
 }
 
-const _o = new THREE.Vector3()
-const _d = new THREE.Vector3()
 const _dir = new THREE.Vector3()
 const _v = new THREE.Vector3()
 const _p0 = new THREE.Vector3()
@@ -100,7 +98,10 @@ export interface ParticleCapacity {
   fireball: number
 }
 
-const DEFAULT_CAPACITY: ParticleCapacity = { soft: 1024, smoke: 512, glow: 2048, streak: 1024, tracer: 128, fireball: 16 }
+/** Frames the live count (ParticleWorld.active) takes to go through every ring. */
+const COUNT_FRAMES = 15
+
+const DEFAULT_CAPACITY: ParticleCapacity = { soft: 1024, smoke: 512, glow: 2048, streak: 1024, tracer: 128, fireball: 32 }
 
 export class ParticleWorld {
   readonly ramps = new RampTable(192)
@@ -129,19 +130,27 @@ export class ParticleWorld {
   constructor(scene: THREE.Scene, events: EventBus, capacity: Partial<ParticleCapacity> = {}) {
     const cap = { ...DEFAULT_CAPACITY, ...capacity }
     this.shared = { uTime: { value: 0 }, uRamp: { value: this.ramps.texture } }
-    // Draw order among the transparent styles: smoke under everything, then dust, then the additive glows over both.
+    // The sprite styles (smoke, dust, glow) share one batch and one draw (batches.ts MIXED_BLENDING), each particle drawn
+    // as its layer says; the others are drawn over them.
+    const sprites = new SpriteBatch(cap.smoke + cap.soft + cap.glow, this.shared, MIXED_BLENDING, false, 5)
     this.batches = {
-      smoke: new SpriteBatch(cap.smoke, this.shared, THREE.NormalBlending, true, 3),
-      soft: new SpriteBatch(cap.soft, this.shared, THREE.NormalBlending, false, 5),
-      glow: new SpriteBatch(cap.glow, this.shared, THREE.AdditiveBlending, false, 6),
+      smoke: sprites,
+      soft: sprites,
+      glow: sprites,
       streak: new StreakBatch(cap.streak, this.shared),
       tracer: new TracerBatch(cap.tracer, this.shared),
       fireball: new FireballBatch(cap.fireball, this.shared),
     }
-    this.batchList = Object.values(this.batches)
+    this.batchList = [...new Set(Object.values(this.batches))]
+    let slots = 0
+    for (const b of this.batchList) slots += b.capacity
+    this.countPer = Math.ceil(slots / COUNT_FRAMES)
     this.root.name = 'particles'
     for (const b of this.batchList) this.root.add(b.object)
     scene.add(this.root)
+    // Never moved (everything in it is placed in world space): left out of drawing's walk (World.walkedScene).
+    this.root.matrixAutoUpdate = false
+    this.root.matrixWorldAutoUpdate = false
     addLive(this.root)
     // A tap, not a listener: it survives the bus being cleared for a new level.
     events.tap((name, payload) => {
@@ -199,7 +208,7 @@ export class ParticleWorld {
       const n = roundCount(pick(d.count, intensity, 1) * mult)
       if (n <= 0) continue
       if (layer.style === 'chunk') this.burstChunks(layer, at, opts, n, intensity)
-      else for (let i = 0; i < n; i++) this.spawn(layer, at, opts, intensity, i, n, delay + (d.delay ?? 0), null)
+      else this.spawnLayer(layer, at, opts, intensity, n, delay + (d.delay ?? 0), null, -1)
     }
     return true
   }
@@ -266,6 +275,9 @@ export class ParticleWorld {
     // Already ending (a negative alpha marks it) or already gone: nothing to do.
     if (b.data[o + 15]! < 0 || age >= b.data[o + 7]!) return
     const stop = Math.max(0, flight ?? age)
+    // The last of the batch to die, it may be the one cut short: the batch's last death worked out again (Batch.deathStale).
+    const oldDeath = b.data[o + 3]! + b.data[o + 7]!
+    if (oldDeath >= b.lastDeath - 1e-3) b.deathStale = true
     // It does not vanish: its head stops where the round did and its tail runs in after it and fades, over
     // TRACER_LINGER. At 900 m/s a round crosses a room in a frame or two, and cut at the hit a tracer was barely seen.
     b.data[o + 7] = stop + TRACER_LINGER
@@ -276,122 +288,192 @@ export class ParticleWorld {
 
   // --- the per-particle work ---------------------------------------------
 
-  /** Write one particle of `layer`. `k`/`n` place it round a ring. `emitter` supplies stream overrides. */
-  private spawn(layer: CompiledLayer, at: THREE.Vector3, opts: FireOptions, intensity: number, k: number, n: number, delay: number, emitter: ParticleEmitter | null): void {
+  /**
+   * Write `n` particles of `layer`, born `delay` seconds from now — or, streaming (`streamDt` >= 0), each a little in the
+   * past across the frame of `streamDt`. `emitter` supplies stream overrides. Everything that is the same for the whole
+   * layer is worked out once, and each particle in plain numbers: a particle at a time, through a call per particle and
+   * the vector helpers, was 7 microseconds a particle without the optimising compiler — a man's death burst, most of a
+   * millisecond on the frame he died. The same draws of Math.random in the same order, and the same sums, as then.
+   */
+  private spawnLayer(layer: CompiledLayer, at: THREE.Vector3, opts: FireOptions, intensity: number, n: number, delay: number, emitter: ParticleEmitter | null, streamDt: number): void {
     const d = layer.def
-    const b = this.batches[layer.style as Exclude<ParticleStyle, 'chunk'>]
-    // Where it starts, and which way it goes.
-    _o.copy(at)
-    if (d.offsetY) _o.y += d.offsetY
-    const shape = d.shape ?? 'point'
-    let ringDir = false
-    if (shape === 'ring') {
-      const radius = emitter?.radius ?? pick(d.radius, intensity, 0.28)
-      // Even round the circle, a little scatter so it is not a wheel.
-      const a = ((k + Math.random() * 0.8) / n) * Math.PI * 2
-      const c = Math.cos(a)
-      const s = Math.sin(a)
-      _o.x += c * radius
-      _o.z += s * radius
-      _dir.set(c, d.lift ?? 0.07, s)
-      ringDir = true
-    } else if (shape === 'disc') {
-      const radius = emitter?.radius ?? pick(d.radius, intensity, 0.5)
-      const a = Math.random() * Math.PI * 2
-      const r = Math.sqrt(Math.random()) * radius
-      _o.x += Math.cos(a) * r
-      _o.z += Math.sin(a) * r
-    } else if (shape === 'box') {
-      const e = emitter?.extent
-      const ex = e ? e.x : (d.extent?.[0] ?? 0.5)
-      const ey = e ? e.y : (d.extent?.[1] ?? 0.5)
-      const ez = e ? e.z : (d.extent?.[2] ?? 0.5)
-      _o.x += (Math.random() * 2 - 1) * ex
-      _o.y += (Math.random() * 2 - 1) * ey
-      _o.z += (Math.random() * 2 - 1) * ez
-    }
+    const style = layer.style
+    const b = this.batches[style as Exclude<ParticleStyle, 'chunk'>]
+    const r = b.data
+    const row = layer.row
+    const offsetY = d.offsetY
+    const shapeName = d.shape ?? 'point'
+    const shape = shapeName === 'ring' ? 1 : shapeName === 'disc' ? 2 : shapeName === 'box' ? 3 : 0
+    const radius = shape === 1 ? (emitter?.radius ?? pick(d.radius, intensity, 0.28)) : shape === 2 ? (emitter?.radius ?? pick(d.radius, intensity, 0.5)) : 0
+    const lift = d.lift ?? 0.07
+    const ext = emitter?.extent
+    const ex = shape === 3 ? (ext ? ext.x : (d.extent?.[0] ?? 0.5)) : 0
+    const ey = shape === 3 ? (ext ? ext.y : (d.extent?.[1] ?? 0.5)) : 0
+    const ez = shape === 3 ? (ext ? ext.z : (d.extent?.[2] ?? 0.5)) : 0
     const jitter = pick(d.jitter, intensity, 0)
-    if (jitter > 0) {
-      _o.x += (Math.random() - 0.5) * jitter
-      _o.y += (Math.random() - 0.5) * jitter
-      _o.z += (Math.random() - 0.5) * jitter
+    // The way it goes (a ring's, each particle's own, out from the middle).
+    let wx = 0
+    let wy = 0
+    let wz = 0
+    if (d.dir) {
+      wx = d.dir[0]
+      wy = d.dir[1]
+      wz = d.dir[2]
+    } else {
+      const od = opts.dir ?? UP
+      wx = od.x
+      wy = od.y
+      wz = od.z
     }
-    if (!ringDir) {
-      if (d.dir) _dir.set(d.dir[0], d.dir[1], d.dir[2])
-      else _dir.copy(opts.dir ?? UP)
-    }
-    // A random direction bent toward `dir` by (1 - spread). The length of `dir` weights the mix, as it always has.
-    const spread = pick(d.spread, intensity, shape === 'ring' ? 0.1 : 0.5)
-    const theta = Math.random() * Math.PI * 2
-    const z = Math.random() * 2 - 1
-    const rr = Math.sqrt(Math.max(0, 1 - z * z))
-    _d.set(rr * Math.cos(theta), rr * Math.sin(theta), z)
-    _d.multiplyScalar(spread).addScaledVector(_dir, 1 - spread)
-    if (_d.lengthSq() < 1e-8) _d.copy(_dir)
-    _d.normalize()
+    const spread = pick(d.spread, intensity, shape === 1 ? 0.1 : 0.5)
+    const keep = 1 - spread
     const sv = d.speedVariance ?? 0.45
-    const speed = pick(d.speed, intensity, 0) * (1 - sv + Math.random() * 2 * sv)
-    _v.copy(_d).multiplyScalar(speed)
+    const speedBase = pick(d.speed, intensity, 0)
+    const svLow = 1 - sv
     const inherit = d.inherit ?? 1
-    if (opts.velocity && inherit !== 0) _v.addScaledVector(opts.velocity, inherit)
-    if (d.pinch) {
-      // Back toward the axis through the origin, across the direction of travel.
-      _p0.subVectors(_o, at)
-      _p0.addScaledVector(_d, -_p0.dot(_d))
-      _v.addScaledVector(_p0, -d.pinch)
-    }
-
-    const life = pick(d.life, intensity, 1) * (1 - (d.lifeVariance ?? 0.35) * Math.random())
-    const size = pick(d.size, intensity, 0.1) * (1 - (d.sizeVariance ?? 0.4) * Math.random())
+    const vel = opts.velocity && inherit !== 0 ? opts.velocity : null
+    const pinch = d.pinch
+    const lifeBase = pick(d.life, intensity, 1)
+    const lifeVar = d.lifeVariance ?? 0.35
+    const sizeBase = pick(d.size, intensity, 0.1)
+    const sizeVar = d.sizeVariance ?? 0.4
     const g = pick(d.gravity, intensity, 0)
     const drag = pick(d.drag, intensity, 1.4)
-    const alpha = pick(d.alpha, intensity, layer.style === 'soft' || layer.style === 'smoke' || layer.style === 'glow' ? 0.75 : 1)
-    const birth = this.time + delay
-
-    const o = b.claim()
-    const r = b.data
-    r[o] = _o.x
-    r[o + 1] = _o.y
-    r[o + 2] = _o.z
-    r[o + 3] = birth
-    r[o + 4] = _v.x
-    r[o + 5] = _v.y
-    r[o + 6] = _v.z
-    r[o + 7] = life
-    r[o + 8] = g
-    r[o + 9] = drag
-    r[o + 10] = size
-    r[o + 11] = layer.row
-    if (layer.style === 'streak') {
-      const floor = opts.floor ?? emitter?.floor ?? null
-      r[o + 12] = 0
-      r[o + 13] = 0
-      r[o + 14] = alpha
-      r[o + 15] = d.bounce !== undefined && floor !== null ? floorHitTime(_o.y, _v.y, g, drag, floor + (d.floorOffset ?? 0), life) : -1
-    } else if (layer.style === 'tracer') {
-      // Fired as an effect, a tracer is drawn from where it starts.
-      r[o + 12] = _o.x
-      r[o + 13] = _o.y
-      r[o + 14] = _o.z
-      r[o + 15] = alpha
-    } else {
-      r[o + 12] = Math.random() * Math.PI * 2
-      r[o + 13] = (Math.random() * 2 - 1) * (d.spin ?? 1.1)
-      r[o + 14] = alpha
-      // Which way out from the emitter's axis it was born, for billow; anywhere if it was born on the axis.
-      const ox = _o.x - at.x
-      const oz = _o.z - at.z
-      r[o + 15] = ox * ox + oz * oz > 1e-6 ? Math.atan2(oz, ox) : Math.random() * Math.PI * 2
-    }
-    b.lastDeath = Math.max(b.lastDeath, birth + life)
-
-    // What it turns into when it dies, worked out now: where it will be then.
+    const sprite = style === 'soft' || style === 'smoke' || style === 'glow'
+    const alpha = pick(d.alpha, intensity, sprite ? 0.75 : 1)
+    const streak = style === 'streak'
+    const tracer = style === 'tracer'
+    const floor = streak ? (opts.floor ?? emitter?.floor ?? null) : null
+    const bounceAt = streak && d.bounce !== undefined && floor !== null ? floor + (d.floorOffset ?? 0) : null
+    const spin = d.spin ?? 1.1
     const after = d.onDeath
-    if (after && Math.random() < (after.chance ?? 1)) {
-      _p0.copy(_o)
-      trajectory(_p0, _v, g, drag, life, _end)
-      if (after.minRise === undefined || _end.y - at.y >= after.minRise) {
-        this.fireDelayed(after.effect, _deathAt.copy(_end), NO_OPTS, delay + life)
+    for (let k = 0; k < n; k++) {
+      const born = streamDt >= 0 ? -streamDt * ((k + Math.random()) / n) : delay
+      // Where it starts, and which way it goes. (`at` read each time: a death's own death writes the one it was given.)
+      let ox = at.x
+      let oy = at.y
+      let oz = at.z
+      if (offsetY) oy += offsetY
+      let dirx = wx
+      let diry = wy
+      let dirz = wz
+      if (shape === 1) {
+        // Even round the circle, a little scatter so it is not a wheel.
+        const a = ((k + Math.random() * 0.8) / n) * Math.PI * 2
+        const c = Math.cos(a)
+        const s = Math.sin(a)
+        ox += c * radius
+        oz += s * radius
+        dirx = c
+        diry = lift
+        dirz = s
+      } else if (shape === 2) {
+        const a = Math.random() * Math.PI * 2
+        const rr = Math.sqrt(Math.random()) * radius
+        ox += Math.cos(a) * rr
+        oz += Math.sin(a) * rr
+      } else if (shape === 3) {
+        ox += (Math.random() * 2 - 1) * ex
+        oy += (Math.random() * 2 - 1) * ey
+        oz += (Math.random() * 2 - 1) * ez
+      }
+      if (jitter > 0) {
+        ox += (Math.random() - 0.5) * jitter
+        oy += (Math.random() - 0.5) * jitter
+        oz += (Math.random() - 0.5) * jitter
+      }
+      // A random direction bent toward the way it goes by (1 - spread). That way's length weights the mix, as it always has.
+      const theta = Math.random() * Math.PI * 2
+      const z = Math.random() * 2 - 1
+      const rr = Math.sqrt(Math.max(0, 1 - z * z))
+      let dx = rr * Math.cos(theta)
+      let dy = rr * Math.sin(theta)
+      let dz = z
+      dx *= spread
+      dy *= spread
+      dz *= spread
+      dx += dirx * keep
+      dy += diry * keep
+      dz += dirz * keep
+      if (dx * dx + dy * dy + dz * dz < 1e-8) {
+        dx = dirx
+        dy = diry
+        dz = dirz
+      }
+      const inv = 1 / (Math.sqrt(dx * dx + dy * dy + dz * dz) || 1)
+      dx *= inv
+      dy *= inv
+      dz *= inv
+      const speed = speedBase * (svLow + Math.random() * 2 * sv)
+      let vx = dx * speed
+      let vy = dy * speed
+      let vz = dz * speed
+      if (vel) {
+        vx += vel.x * inherit
+        vy += vel.y * inherit
+        vz += vel.z * inherit
+      }
+      if (pinch) {
+        // Back toward the axis through the origin, across the direction of travel.
+        let px = ox - at.x
+        let py = oy - at.y
+        let pz = oz - at.z
+        const along = -(px * dx + py * dy + pz * dz)
+        px += dx * along
+        py += dy * along
+        pz += dz * along
+        vx += px * -pinch
+        vy += py * -pinch
+        vz += pz * -pinch
+      }
+
+      const life = lifeBase * (1 - lifeVar * Math.random())
+      const size = sizeBase * (1 - sizeVar * Math.random())
+      const birth = this.time + born
+
+      const o = b.claim()
+      r[o] = ox
+      r[o + 1] = oy
+      r[o + 2] = oz
+      r[o + 3] = birth
+      r[o + 4] = vx
+      r[o + 5] = vy
+      r[o + 6] = vz
+      r[o + 7] = life
+      r[o + 8] = g
+      r[o + 9] = drag
+      r[o + 10] = size
+      r[o + 11] = row
+      if (streak) {
+        r[o + 12] = 0
+        r[o + 13] = 0
+        r[o + 14] = alpha
+        r[o + 15] = bounceAt !== null ? floorHitTime(oy, vy, g, drag, bounceAt, life) : -1
+      } else if (tracer) {
+        // Fired as an effect, a tracer is drawn from where it starts.
+        r[o + 12] = ox
+        r[o + 13] = oy
+        r[o + 14] = oz
+        r[o + 15] = alpha
+      } else {
+        r[o + 12] = Math.random() * Math.PI * 2
+        r[o + 13] = (Math.random() * 2 - 1) * spin
+        r[o + 14] = alpha
+        // Which way out from the emitter's axis it was born, for billow; anywhere if it was born on the axis.
+        const bx = ox - at.x
+        const bz = oz - at.z
+        r[o + 15] = bx * bx + bz * bz > 1e-6 ? Math.atan2(bz, bx) : Math.random() * Math.PI * 2
+      }
+      b.lastDeath = Math.max(b.lastDeath, birth + life)
+
+      // What it turns into when it dies, worked out now: where it will be then.
+      if (after && Math.random() < (after.chance ?? 1)) {
+        _p0.set(ox, oy, oz)
+        _v.set(vx, vy, vz)
+        trajectory(_p0, _v, g, drag, life, _end)
+        if (after.minRise === undefined || _end.y - at.y >= after.minRise) {
+          this.fireDelayed(after.effect, _deathAt.copy(_end), NO_OPTS, born + life)
+        }
       }
     }
   }
@@ -444,6 +526,46 @@ export class ParticleWorld {
       if (pool.active > 0) pool.update(dt)
     }
     for (let i = 0; i < this.batchList.length; i++) this.batchList[i]!.flush(this.time)
+    this.countSlice()
+  }
+
+  /**
+   * The next stretch of the count (`active`): countPer slots of the rings a frame, so the whole is counted about four
+   * times a second at 60 frames a second; the total taken when the last ring is done, the chunks with it.
+   */
+  private countSlice(): void {
+    const t = this.time
+    let left = this.countPer
+    while (left > 0) {
+      const b = this.batchList[this.countBatch]
+      if (!b) {
+        let c = this.countSum
+        for (let i = 0; i < this.chunkList.length; i++) c += this.chunkList[i]!.active
+        this.activeCount = c
+        this.countBatch = 0
+        this.countAt = 0
+        this.countSum = 0
+        return
+      }
+      const n = Math.min(b.written, b.capacity)
+      // (Past its last death, nothing in it is alive.)
+      if (t >= b.lastDeath || this.countAt >= n) {
+        this.countBatch++
+        this.countAt = 0
+        continue
+      }
+      const stop = Math.min(n, this.countAt + left)
+      const d = b.data
+      let c = 0
+      // Each record's birth (its fourth number) and life (its eighth).
+      for (let o = this.countAt * STRIDE + 3, end = stop * STRIDE + 3; o < end; o += STRIDE) {
+        const age = t - d[o]!
+        if (age >= 0 && age < d[o + 4]!) c++
+      }
+      this.countSum += c
+      left -= stop - this.countAt
+      this.countAt = stop
+    }
   }
 
   private stream(e: ParticleEmitter, dt: number): void {
@@ -480,10 +602,8 @@ export class ParticleWorld {
         this.burstChunks(layer, _wp, opts, n, e.intensity)
         continue
       }
-      for (let k = 0; k < n; k++) {
-        // Spread the births across the frame (born a little in the past), so a fast stream is a stream and not bands.
-        this.spawn(layer, _wp, opts, e.intensity, k, n, -dt * ((k + Math.random()) / n), e)
-      }
+      // Its births spread across the frame (born a little in the past), so a fast stream is a stream and not bands.
+      this.spawnLayer(layer, _wp, opts, e.intensity, n, 0, e, dt)
     }
   }
 
@@ -491,29 +611,48 @@ export class ParticleWorld {
   clear(): void {
     for (const b of this.batchList) b.clear()
     for (const pool of this.chunkList) pool.clear()
+    this.activeCount = 0
+    this.countBatch = 0
+    this.countAt = 0
+    this.countSum = 0
   }
 
   /** How many particles are alive in each style right now. Walks the rings: for tools and the HUD, not per frame. */
   live(): Record<ParticleStyle, number> {
     const out = { soft: 0, smoke: 0, glow: 0, streak: 0, tracer: 0, fireball: 0, chunk: 0 } as Record<ParticleStyle, number>
+    const counted = new Set<Batch>()
     for (const [style, b] of Object.entries(this.batches) as [Exclude<ParticleStyle, 'chunk'>, Batch][]) {
+      // The sprite styles share one batch: each of its particles counted once, under its own layer's style.
+      if (counted.has(b)) continue
+      counted.add(b)
+      const shared = b === this.batches.soft
       const n = Math.min(b.written, b.capacity)
       let c = 0
       for (let i = 0; i < n; i++) {
         const age = this.time - b.data[i * STRIDE + 3]!
-        if (age >= 0 && age < b.data[i * STRIDE + 7]!) c++
+        if (!(age >= 0 && age < b.data[i * STRIDE + 7]!)) continue
+        if (shared) out[this.ramps.spriteStyle(b.data[i * STRIDE + 11]!)]++
+        else c++
       }
-      out[style] = c
+      if (!shared) out[style] = c
     }
     for (const pool of this.chunks.values()) out.chunk += pool.active
     return out
   }
 
-  /** Total alive, every style. */
+  /**
+   * Total alive, every style, as last counted: a stretch of the rings a frame (countSlice), the whole about four times a
+   * second. (Counted all at once on one frame in fifteen, that frame was 0.6 ms dearer on the Chromebook.)
+   */
   get active(): number {
-    const l = this.live()
-    return l.soft + l.smoke + l.glow + l.streak + l.tracer + l.fireball + l.chunk
+    return this.activeCount
   }
+  private activeCount = 0
+  /** The count under way: the batch it is in, how far into it, and what it has come to so far. */
+  private countBatch = 0
+  private countAt = 0
+  private countSum = 0
+  private readonly countPer: number
 
   /** A batch, for tests and tools. */
   batch(style: Exclude<ParticleStyle, 'chunk'>): Batch {

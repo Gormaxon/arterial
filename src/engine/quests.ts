@@ -124,6 +124,15 @@ export class QuestSystem {
     return true
   }
 
+  /** Back to not started, its progress gone: a mission played again. */
+  reset(id: string): void {
+    const run = this.runs.get(id)
+    if (!run) return
+    run.state = 'inactive'
+    run.progress = run.def.objectives.map(() => 0)
+    this.version++
+  }
+
   fail(id: string): void {
     const run = this.runs.get(id)
     if (!run || run.state !== 'active') return

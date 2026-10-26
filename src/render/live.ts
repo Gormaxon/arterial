@@ -15,6 +15,13 @@ export const LIVE_LAYER = 3
 
 export const liveRoots = new Set<THREE.Object3D>()
 
+/**
+ * Frame generation is on (FrameGen.setEnabled): live objects are drawn fresh on every frame and everything else only on
+ * the real ones. What hands its drawing over to the still scenery when it comes to rest (a door's leaves: door.ts)
+ * does not while this is so — the handover would show for the frames made between two real ones.
+ */
+export const liveDrawing = { generated: false }
+
 export function addLive(obj: THREE.Object3D): void {
   liveRoots.add(obj)
 }

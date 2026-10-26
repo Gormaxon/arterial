@@ -35,6 +35,7 @@
 
 import * as THREE from 'three'
 import type { Upscaler } from './upscale'
+import { liveDrawing } from './live'
 
 const VERT = /* glsl */ `
 varying vec2 vUv;
@@ -231,6 +232,7 @@ export class FrameGen {
   setEnabled(on: boolean): void {
     if (on === this.enabled) return
     this.enabled = on
+    liveDrawing.generated = on
     this.valid = false
     this.generateNext = false
     this.stats.real = 0

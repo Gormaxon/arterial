@@ -41,6 +41,10 @@ compiled down) and on the GPU, and that buys it a lot:
 - Particle engine: GPU-analytic batches (soft, smoke, glow, streak, tracer, fireball) plus CPU chunk pools for
   debris; effects are named data, fired by name, streamed by emitters or triggered by events.
 - Cutscenes (camera paths, captions, fades, scripted input) and quests (objectives driven by events).
+- Boss fights: an encounter with its own health, phases that begin at shares of it (a big hit stops on the next
+  phase's line), an untouchable entrance and per-phase guard time, all announced on the event bus (`boss:start`,
+  `boss:phase`, `boss:health`, `boss:defeated[:<id>]`, `boss:reset`). The boss itself — model, moves, attacks — is
+  the game's: an entity that owns a `BossEncounter` and acts on its state.
 - What surfaces are made of (stone, steel, grating, lava), for sounds and ricochets.
 
 **physics/** — the collision system: a BVH over the baked level, moving bodies, ray casts, capsule tests.

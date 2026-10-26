@@ -3,7 +3,8 @@
  * are the engine itself:
  *
  *   engine/     the world (entities, events, the level format), the baked streaming level, point-light pool,
- *               static batching, the particle engine, cutscenes, quests, what surfaces are made of
+ *               static batching, the particle engine, cutscenes, quests, boss fights, what surfaces
+ *               are made of
  *   physics/    the collision system (BVH-backed static level plus moving bodies) and capsule tests
  *   core/       the fixed-step loop, input (pointer lock, keys, mouse), persisted settings
  *   render/     procedural materials and textures, the level material, sky, FSR 1 upscaling, frame generation,
@@ -21,6 +22,7 @@ export { LightPool, POINT_LIGHT_BUDGET, type PointSource } from './engine/lightp
 export { StaticBatches, BatchSlot } from './engine/batches'
 export { CutsceneSystem, PLAY_PREFIX, type CutsceneDef, type CutsceneStep, type Caption } from './engine/cutscene'
 export { QuestSystem, START_PREFIX, type QuestDef, type ObjectiveDef, type QuestNotice } from './engine/quests'
+export { BossEncounter, type BossDef, type BossPhaseDef, type BossState, type BossHealth } from './engine/boss'
 export { SURFACE_CLASS, surfaceClass, RICOCHET, type SurfaceClass } from './engine/surfaces'
 export * from './engine/particles'
 

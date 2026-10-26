@@ -52,4 +52,5 @@ export { LightBlock, VERTEX_POINT_LIGHTS } from './render/lightblock'
 
 // Entities and geometry.
 export * from './entities'
+export { tileCentres, type BakeTiles } from './entities/buildable'
 export { placer, cylPlacer, box, boxAt, leaf, repeatsFor, type Part, type Place, type BoxSpec } from './prefabs/geometry'

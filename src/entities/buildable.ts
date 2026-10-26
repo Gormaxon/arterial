@@ -12,6 +12,37 @@ import { Entity, type EntityDef } from '../engine/entity'
 import type { Part, BoxSpec } from '../prefabs/geometry'
 import type { SurfaceKey } from '../render/textures'
 
+/**
+ * A buildable baked as a grid of identical tiles (Buildable.bakeTiles): one tile's parts are built, face-culled and
+ * compacted once, and stamped across the grid — so a level-sized floor or ceiling costs a tile, not thirty thousand
+ * parts, and one big piece is cheaper than the many small ones it stands for. The tiles lie side by side across the
+ * buildable's own X and Z, `count` of them each way, each `tile` metres (its full height), centred in it.
+ */
+export interface BakeTiles {
+  /** What decides one tile's parts, as a bake key does a whole buildable's. */
+  key: string
+  /** One tile's parts, in its own local space (centred like a buildable's). */
+  build(): Part[]
+  /** Tiles across X and across Z. */
+  count: [number, number]
+  /** One tile's size: x, y, z. */
+  tile: [number, number, number]
+}
+
+/** Each tile's centre in its buildable's local space (x, z pairs), row by row. */
+export function tileCentres(t: BakeTiles): Float32Array {
+  const [nx, nz] = t.count
+  const out = new Float32Array(nx * nz * 2)
+  let o = 0
+  for (let j = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++) {
+      out[o++] = (i + 0.5 - nx / 2) * t.tile[0]
+      out[o++] = (j + 0.5 - nz / 2) * t.tile[2]
+    }
+  }
+  return out
+}
+
 /** A part's box and surface: enough to say which surface a point on the buildable is. */
 interface SurfaceBox {
   box: THREE.Box3
@@ -25,6 +56,7 @@ const _local = new THREE.Vector3()
 const _holeInv = new THREE.Matrix4()
 const _holeRay = new THREE.Ray()
 const _holeHit = new THREE.Vector3()
+const _holeStart = new THREE.Vector3()
 /** How far past where a round met its collision a hole is looked for in its drawn pieces (metres, its own space). */
 const HOLE_REACH = 3
 
@@ -73,6 +105,14 @@ export abstract class Buildable extends Entity {
     return null
   }
 
+  /**
+   * Baked as a grid of identical tiles rather than as one piece (BakeTiles), or null (the default): what a buildable
+   * big enough for its parts to run into the tens of thousands says, if its build repeats.
+   */
+  bakeTiles(): BakeTiles | null {
+    return null
+  }
+
   /** Detailed render geometry, in local space. */
   abstract buildParts(): Part[]
 
@@ -94,6 +134,9 @@ export abstract class Buildable extends Entity {
     if (boxes.length === 1) return boxes[0]!.surface
     this.object.updateMatrixWorld()
     this.object.worldToLocal(_local.copy(point))
+    // Tiled: the point in the space of the tile it is over (the boxes are one tile's).
+    const tiles = this.bakeTiles()
+    if (tiles) this.intoTile(tiles, _local, 0, 0)
     let best: SurfaceBox | null = null
     let bestD = Infinity
     for (const b of boxes) {
@@ -125,18 +168,36 @@ export abstract class Buildable extends Entity {
     const o = _holeRay.origin.copy(point).applyMatrix4(_holeInv).addScaledVector(d, -0.01)
     let best = HOLE_REACH
     let at: SurfaceBox | null = null
-    for (const b of boxes) {
-      const t = b.box.containsPoint(o) ? 0 : _holeRay.intersectBox(b.box, _holeHit) ? _holeHit.distanceTo(o) : Infinity
-      if (t < best) {
-        best = t
-        at = b
+    // Tiled: the boxes are one tile's — looked through from the tile the point is over and each tile round it (a round
+    // a little past a tile's edge goes on into the next), the ray shifted into each one's space.
+    const tiles = this.bakeTiles()
+    const reach = tiles ? 1 : 0
+    _holeStart.copy(o)
+    let shift = 0
+    let shiftZ = 0
+    for (let di = -reach; di <= reach; di++) {
+      for (let dj = -reach; dj <= reach; dj++) {
+        o.copy(_holeStart)
+        const [sx, sz] = tiles ? this.intoTile(tiles, o, di, dj) : [0, 0]
+        for (const b of boxes) {
+          const t = b.box.containsPoint(o) ? 0 : _holeRay.intersectBox(b.box, _holeHit) ? _holeHit.distanceTo(o) : Infinity
+          if (t < best) {
+            best = t
+            at = b
+            shift = sx
+            shiftZ = sz
+          }
+        }
       }
     }
+    o.copy(_holeStart)
     if (!at) return false
     outPoint.copy(o).addScaledVector(d, best)
-    // The face it is on: the one of the box nearest the point.
+    // The face it is on: the one of the box nearest the point (in the box's own tile, when tiled).
     const { min, max } = at.box
-    const faces = [outPoint.x - min.x, max.x - outPoint.x, outPoint.y - min.y, max.y - outPoint.y, outPoint.z - min.z, max.z - outPoint.z]
+    const px = outPoint.x - shift
+    const pz = outPoint.z - shiftZ
+    const faces = [px - min.x, max.x - px, outPoint.y - min.y, max.y - outPoint.y, pz - min.z, max.z - pz]
     let f = 0
     for (let i = 1; i < 6; i++) if (Math.abs(faces[i]!) < Math.abs(faces[f]!)) f = i
     outNormal.set(f === 0 ? -1 : f === 1 ? 1 : 0, f === 2 ? -1 : f === 3 ? 1 : 0, f === 4 ? -1 : f === 5 ? 1 : 0)
@@ -147,6 +208,16 @@ export abstract class Buildable extends Entity {
 
   /** The parts' boxes, built once per shape (the parts themselves are thrown away). */
   private surfaceBoxes(): SurfaceBox[] {
+    const tiles = this.bakeTiles()
+    if (tiles) {
+      let list = SURFACE_BOXES.get(tiles.key)
+      if (!list) {
+        const parts = tiles.build()
+        SURFACE_BOXES.set(tiles.key, (list = boxesOf(parts)))
+        for (const p of parts) p.geometry.dispose()
+      }
+      return list
+    }
     const key = this.bakeKey()
     if (key !== null) {
       let list = SURFACE_BOXES.get(key)
@@ -170,6 +241,21 @@ export abstract class Buildable extends Entity {
     const out = boxesOf(parts)
     for (const p of parts) p.geometry.dispose()
     return out
+  }
+
+  /**
+   * Move a point in this buildable's local space into the space of the tile it is over (or the one `di`, `dj` tiles
+   * from it): returns the tile centre that was taken off, x and z.
+   */
+  private intoTile(t: BakeTiles, p: THREE.Vector3, di: number, dj: number): [number, number] {
+    const [nx, nz] = t.count
+    const i = Math.min(nx - 1, Math.max(0, Math.floor(p.x / t.tile[0] + nx / 2))) + di
+    const j = Math.min(nz - 1, Math.max(0, Math.floor(p.z / t.tile[2] + nz / 2))) + dj
+    const cx = (Math.min(nx - 1, Math.max(0, i)) + 0.5 - nx / 2) * t.tile[0]
+    const cz = (Math.min(nz - 1, Math.max(0, j)) + 0.5 - nz / 2) * t.tile[2]
+    p.x -= cx
+    p.z -= cz
+    return [cx, cz]
   }
 
   /** Which axes the editor may resize. */

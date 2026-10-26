@@ -19,7 +19,7 @@
  */
 
 import * as THREE from 'three'
-import { seedSurfaceBoxes, type Buildable } from '../entities/buildable'
+import { seedSurfaceBoxes, tileCentres, type Buildable } from '../entities/buildable'
 import type { SurfaceKey } from '../render/materials'
 import { cullHiddenFaces } from './facecull'
 import { surfaceLayer } from '../render/levelmaterial'
@@ -68,6 +68,11 @@ function makeTemplate(entity: Buildable): Template {
   const parts = entity.buildParts()
   // The same parts say what each of its surfaces is where (Buildable.surfaceAt): noted now, while they exist.
   seedSurfaceBoxes(entity.bakeKey(), parts)
+  return templateOf(parts)
+}
+
+/** A template from parts: face-culled and compacted to just the vertices they use. */
+function templateOf(parts: import('../prefabs/geometry').Part[]): Template {
   const culled = cullHiddenFaces(parts)
   const out: TemplatePart[] = []
   let triangles = 0
@@ -127,6 +132,19 @@ function makeTemplate(entity: Buildable): Template {
     g.dispose()
   }
   return { parts: out, triangles, culled }
+}
+
+/** A tiled buildable's one tile (Buildable.bakeTiles), built once per tile shape. */
+function tileTemplate(tiles: import('../entities/buildable').BakeTiles): Template {
+  let t = templates.get(tiles.key)
+  if (!t) {
+    if (templates.size >= TEMPLATE_LIMIT) templates.clear()
+    const parts = tiles.build()
+    seedSurfaceBoxes(tiles.key, parts)
+    t = templateOf(parts)
+    templates.set(tiles.key, t)
+  }
+  return t
 }
 
 function templateFor(entity: Buildable): Template {
@@ -212,6 +230,14 @@ export function warmTemplates(entities: Buildable[], budgetMs = Infinity): numbe
   const t0 = performance.now()
   let made = 0
   for (const entity of entities) {
+    const tiles = entity.bakeTiles()
+    if (tiles) {
+      if (templates.has(tiles.key)) continue
+      tileTemplate(tiles)
+      made++
+      if (performance.now() - t0 > budgetMs) break
+      continue
+    }
     const key = entity.bakeKey()
     if (key === null || templates.has(key)) continue
     templateFor(entity)
@@ -223,7 +249,7 @@ export function warmTemplates(entities: Buildable[], budgetMs = Infinity): numbe
 
 /** Bake the static buildables of one cell. `indexOf` gives each its stable global index. */
 export function bakeCell(entities: Buildable[], indexOf: (b: Buildable) => number, want: Want = WANT_ALL): CellBake {
-  const jobs: { template: Template; e: Float32Array }[] = []
+  const jobs: { template: Template; e: Float32Array; tone: number }[] = []
   const packs = new Map<string, Pack>()
   let renderTriangles = 0
   let detailTriangles = 0
@@ -232,19 +258,34 @@ export function bakeCell(entities: Buildable[], indexOf: (b: Buildable) => numbe
   // --- pass 1: which templates, and how big each pack has to be ----------------
   for (const entity of want.structure || want.detail ? entities : []) {
     entity.object.updateMatrix()
-    const template = templateFor(entity)
+    // Tiled (Buildable.bakeTiles): one tile's template, stamped at each tile's place in the buildable.
+    const tiles = entity.bakeTiles()
+    const template = tiles ? tileTemplate(tiles) : templateFor(entity)
     if (template.parts.length === 0) continue
-    jobs.push({ template, e: Float32Array.from(entity.object.matrix.elements) })
-    if (want.structure) culledTriangles += template.culled
+    if (tiles) {
+      // Every tile the whole piece's shade: tiles of their own shades would show it as a patchwork.
+      const p = entity.object.position
+      const tone = toneOf(p.x, p.y, p.z)
+      const c = tileCentres(tiles)
+      for (let k = 0; k < c.length; k += 2) {
+        _m.makeTranslation(c[k]!, 0, c[k + 1]!).premultiply(entity.object.matrix)
+        jobs.push({ template, e: Float32Array.from(_m.elements), tone })
+      }
+    } else {
+      const e = Float32Array.from(entity.object.matrix.elements)
+      jobs.push({ template, e, tone: toneOf(e[12]!, e[13]!, e[14]!) })
+    }
+    const copies = tiles ? tiles.count[0] * tiles.count[1] : 1
+    if (want.structure) culledTriangles += template.culled * copies
     for (const tp of template.parts) {
       if (tp.fine ? !want.detail : !want.structure) continue
       const key = tp.fine ? 'd' : 's'
       let p = packs.get(key)
       if (!p) packs.set(key, (p = { detail: tp.fine, vertices: 0, indices: 0, filledVertices: 0, filledIndices: 0 }))
-      p.vertices += tp.vertices
-      p.indices += tp.index.length
-      renderTriangles += tp.index.length / 3
-      if (tp.fine) detailTriangles += tp.index.length / 3
+      p.vertices += tp.vertices * copies
+      p.indices += tp.index.length * copies
+      renderTriangles += (tp.index.length / 3) * copies
+      if (tp.fine) detailTriangles += (tp.index.length / 3) * copies
     }
   }
   for (const p of packs.values()) {
@@ -256,11 +297,10 @@ export function bakeCell(entities: Buildable[], indexOf: (b: Buildable) => numbe
   }
 
   // --- pass 2: pour each instance in, transformed -------------------------------
-  for (const { template, e } of jobs) {
+  for (const { template, e, tone } of jobs) {
     const e0 = e[0]!, e1 = e[1]!, e2 = e[2]!, e4 = e[4]!, e5 = e[5]!, e6 = e[6]!, e8 = e[8]!, e9 = e[9]!, e10 = e[10]!, e12 = e[12]!, e13 = e[13]!, e14 = e[14]!
-    // Each piece's own slight shade and cast (levelmaterial.ts), from where it stands: the same every bake, and
-    // neighbours differ, so a run of identical blocks stops reading as one flat surface.
-    const tone = toneOf(e12, e13, e14)
+    // Each piece's own slight shade and cast (levelmaterial.ts), from where it stands (the job's tone): the same every
+    // bake, and neighbours differ, so a run of identical blocks stops reading as one flat surface.
     for (const tp of template.parts) {
       const p = packs.get(tp.fine ? 'd' : 's')
       if (!p) continue

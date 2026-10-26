@@ -109,10 +109,20 @@ export function cullHiddenFaces(parts: Part[]): number {
   return removed
 }
 
-/** Is the rectangle entirely inside the union of `rects`? Checked cell by cell on the rectangles' own edges. */
+/**
+ * Is the rectangle entirely inside the union of `rects` (each already clipped to it)? A few rectangles: checked cell by
+ * cell on their own edges. Many — a big slab with a floor's worth of tiles against it — that is cubic in their number
+ * (a level-sized ceiling's slab took seconds alone), so the area their union covers is swept up instead and compared.
+ */
 function covered(u0: number, u1: number, v0: number, v1: number, rects: [number, number, number, number][]): boolean {
   // One rectangle that covers it outright is the common case.
   for (const r of rects) if (r[0] <= u0 + EPS && r[1] >= u1 - EPS && r[2] <= v0 + EPS && r[3] >= v1 - EPS) return true
+  // Not even their summed area reaches it: something shows.
+  const area = (u1 - u0) * (v1 - v0)
+  let sum = 0
+  for (const r of rects) sum += (r[1] - r[0]) * (r[3] - r[2])
+  if (sum < area - EPS * (u1 - u0 + v1 - v0)) return false
+  if (rects.length > SWEEP_FROM) return unionArea(rects) >= area - EPS * (u1 - u0 + v1 - v0)
   const us = [u0, u1]
   const vs = [v0, v1]
   for (const r of rects) {
@@ -138,4 +148,61 @@ function covered(u0: number, u1: number, v0: number, v1: number, rects: [number,
     }
   }
   return true
+}
+
+/** Past this many rectangles against one face, `covered` sweeps their union's area rather than testing cell by cell. */
+const SWEEP_FROM = 24
+
+/**
+ * The area of the union of axis-aligned rectangles [u0, u1, v0, v1]: a sweep across u, with the length of v covered at
+ * each step kept in a segment tree over the rectangles' v edges. O(n log n).
+ */
+function unionArea(rects: [number, number, number, number][]): number {
+  const vs: number[] = []
+  for (const r of rects) vs.push(r[2], r[3])
+  vs.sort((p, q) => p - q)
+  const ys: number[] = []
+  for (const y of vs) if (ys.length === 0 || y - ys[ys.length - 1]! > EPS * 0.01) ys.push(y)
+  const n = ys.length - 1
+  if (n <= 0) return 0
+  const find = (y: number): number => {
+    let lo = 0
+    let hi = ys.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (ys[mid]! < y - EPS * 0.01) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+  const count = new Int32Array(4 * n)
+  const len = new Float64Array(4 * n)
+  const update = (node: number, l: number, r: number, a: number, b: number, d: number): void => {
+    if (b <= l || r <= a) return
+    if (a <= l && r <= b) count[node]! += d
+    else {
+      const m = (l + r) >> 1
+      update(node * 2, l, m, a, b, d)
+      update(node * 2 + 1, m, r, a, b, d)
+    }
+    if (count[node]! > 0) len[node] = ys[r]! - ys[l]!
+    else if (r - l === 1) len[node] = 0
+    else len[node] = len[node * 2]! + len[node * 2 + 1]!
+  }
+  const events: [number, number, number, number][] = []
+  for (const r of rects) {
+    const a = find(r[2])
+    const b = find(r[3])
+    if (b <= a) continue
+    events.push([r[0], 1, a, b], [r[1], -1, a, b])
+  }
+  events.sort((p, q) => p[0] - q[0] || q[1] - p[1])
+  let total = 0
+  let lastU = events.length ? events[0]![0] : 0
+  for (const [u, d, a, b] of events) {
+    total += len[1]! * (u - lastU)
+    lastU = u
+    update(1, 0, n, a, b, d)
+  }
+  return total
 }

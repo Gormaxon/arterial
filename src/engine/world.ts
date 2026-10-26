@@ -683,7 +683,7 @@ export class World {
       const maxWait = low ? this.frameDeferLowS : FRAME_DEFER_MAX_S
       for (let k = 0; k < n; k++) {
         const e = frame[(start + k) % n]!
-        if (framed >= budget && e.frameOwed < maxWait) {
+        if (framed >= budget && e.frameOwed < maxWait && !e.frameUrgent) {
           if (next < 0) next = (start + k) % n
           continue
         }

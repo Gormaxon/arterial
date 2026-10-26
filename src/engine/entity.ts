@@ -62,6 +62,14 @@ export abstract class Entity {
   }
   /** Seconds owed to a per-frame entity since its last update (World's book-keeping). */
   frameOwed = 0
+  /**
+   * A per-frame entity that must not be kept waiting by the world's per-frame budget right now: updated every frame
+   * while this is so. For what is seen moving (a door sliding), where a frame or three's wait shows as a jerk. Read
+   * every frame; keep it cheap.
+   */
+  get frameUrgent(): boolean {
+    return false
+  }
 
   constructor(def: EntityDef) {
     this.id = def.id ?? ''

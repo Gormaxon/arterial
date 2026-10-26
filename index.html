@@ -3,15 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Arterial — example</title>
+    <title>Arterial — a no-WebAssembly 3D game engine for the browser (live demo)</title>
+    <meta name="description" content="Arterial is a no-WebAssembly (WebAssembly-free, WebAssemblyless, no WASM) 3D game engine for the browser, written in plain TypeScript on three.js: streaming levels, BVH collision, GPU particles, procedural materials, FSR 1 and frame generation. This page runs its example scene live." />
+    <meta name="keywords" content="no webassembly game engine, webassembly-free engine, webassemblyless engine, no wasm game engine, javascript 3d game engine, three.js game engine, browser game engine, chromebook" />
+    <link rel="canonical" href="https://gormaxon.github.io/arterial/" />
+    <meta property="og:title" content="Arterial — a no-WebAssembly 3D game engine for the browser" />
+    <meta property="og:description" content="A WebAssembly-free 3D game engine in plain TypeScript on three.js. Live demo." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://gormaxon.github.io/arterial/" />
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0a0c; }
       canvas { display: block; }
       #info { position: fixed; left: 12px; top: 10px; font: 12px ui-monospace, Consolas, monospace; color: #9fe8b0; }
+      #about { position: fixed; left: 12px; bottom: 10px; max-width: 46em; font: 12px/1.5 system-ui, sans-serif; color: #c9c9d1; }
+      #about h1 { font-size: 14px; margin: 0 0 2px; color: #fff; }
+      #about p { margin: 0; }
+      #about a { color: #9fe8b0; }
     </style>
   </head>
   <body>
     <div id="info"></div>
+    <div id="about">
+      <h1>Arterial — a no-WebAssembly 3D game engine for the browser</h1>
+      <p>WebAssembly-free: everything here — the streamed level, collision, particles, materials — is plain JavaScript (TypeScript on three.js). This is its example scene, running live. Source on <a href="https://github.com/Gormaxon/arterial">GitHub</a>.</p>
+    </div>
     <script type="module" src="/example/main.ts"></script>
   </body>
 </html>

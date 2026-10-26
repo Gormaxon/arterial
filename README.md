@@ -1,5 +1,8 @@
 # Arterial
 
+**A no-WebAssembly 3D game engine for the browser** — WebAssembly-free (WebAssemblyless, no WASM): plain TypeScript
+on three.js. **[Live demo](https://gormaxon.github.io/arterial/)**
+
 A 3D game engine for the browser, written in TypeScript on [three.js](https://threejs.org) — **with no WebAssembly
 anywhere in it.** It is the engine underneath SANGUINE, a fast first-person shooter built to run on low-end
 machines like a school Chromebook, taken out on its own: just the engine, none of the game.

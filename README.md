@@ -44,7 +44,7 @@ compiled down) and on the GPU, and that buys it a lot:
 - Static batching: small props drawn as one mesh per material, with pieces that can still be knocked out.
 - Particle engine: GPU-analytic batches (soft, smoke, glow, streak, tracer, fireball) plus CPU chunk pools for
   debris; effects are named data, fired by name, streamed by emitters or triggered by events.
-- Cutscenes (camera paths, captions, fades, scripted input) and quests (objectives driven by events).
+- Cutscenes (camera paths, captions, fades, scripted input) and quests (objectives and sub-objectives driven by events).
 - Boss fights: an encounter with its own health, phases that begin at shares of it (a big hit stops on the next
   phase's line), an untouchable entrance and per-phase guard time, all announced on the event bus (`boss:start`,
   `boss:phase`, `boss:health`, `boss:defeated[:<id>]`, `boss:reset`). The boss itself — model, moves, attacks — is

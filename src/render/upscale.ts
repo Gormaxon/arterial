@@ -169,29 +169,28 @@ void main() {
     float fade = clamp(min(u, 1.0 - u) / 0.2, 0.0, 1.0);
     outc = mix(outc, tc.rgb, tc.a * fade * uVisorA);
   }
-  // The crosshair: four ticks (gap uCh.x), the red dot, the lock-on frame; a dark edge and a green glow round each.
+  // The crosshair: four thin ticks (their gap uCh.x: the spread) round a small dot, all one pale green, each with a
+  // crisp dark edge so it reads on a bright wall and a dark one alike. A hit (uCh.z) puts a small white X round them.
   if (uCh.y > 0.0) {
     vec2 p = px - uRes * 0.5 / uCss;
     float gap = uCh.x;
-    float len = 8.0;
-    float ticks = min(min(sdBox(p, vec2(0.0, -gap - len * 0.5), vec2(1.0, len * 0.5)), sdBox(p, vec2(0.0, gap + len * 0.5), vec2(1.0, len * 0.5))),
-      min(sdBox(p, vec2(-gap - len * 0.5, 0.0), vec2(len * 0.5, 1.0)), sdBox(p, vec2(gap + len * 0.5, 0.0), vec2(len * 0.5, 1.0))));
-    float out1 = max(0.0, gap + len + 14.0 - 30.0);
-    vec2 a = abs(p);
-    float o = 30.0 + out1;
-    float frame = min(sdBox(a, vec2(o - 5.0, o - 0.75), vec2(5.0, 0.75)), sdBox(a, vec2(o - 0.75, o - 5.0), vec2(0.75, 5.0)));
-    float halo = min(ticks, frame);
-    // (As the page drew it: drop-shadow 1.5 px black, 4 px green at a third — soft falloffs, not solid bands.)
-    float edge = 0.95 * pow(1.0 - smoothstep(0.0, 1.5, halo), 2.0);
-    float glow = 0.35 * pow(1.0 - smoothstep(0.0, 4.0, halo), 2.0);
-    outc = mix(outc, vec3(0.0), edge * 0.5 * uCh.y);
-    outc = mix(outc, vec3(0.353, 1.0, 0.549), glow * 0.45 * uCh.y);
-    vec3 tick = mix(vec3(0.769, 1.0, 0.827), vec3(1.0), uCh.z);
-    outc = mix(outc, tick, (1.0 - smoothstep(-aa, aa, frame)) * 0.62 * uCh.y);
-    outc = mix(outc, tick, (1.0 - smoothstep(-aa, aa, ticks)) * uCh.y);
-    float dot = length(p) - 1.5;
-    outc = mix(outc, mix(vec3(1.0, 0.231, 0.329), vec3(1.0), uCh.z), 0.9 * (1.0 - smoothstep(0.0, 5.0, max(dot, 0.0))) * 0.5 * uCh.y);
-    outc = mix(outc, mix(vec3(1.0, 0.231, 0.329), vec3(1.0), uCh.z), (1.0 - smoothstep(-aa, aa, dot)) * uCh.y);
+    float len = 7.0;
+    float w = 0.85;
+    float ticks = min(min(sdBox(p, vec2(0.0, -gap - len * 0.5), vec2(w, len * 0.5)), sdBox(p, vec2(0.0, gap + len * 0.5), vec2(w, len * 0.5))),
+      min(sdBox(p, vec2(-gap - len * 0.5, 0.0), vec2(len * 0.5, w)), sdBox(p, vec2(gap + len * 0.5, 0.0), vec2(len * 0.5, w))));
+    float dot = length(p) - 1.1;
+    // The hit X: four short strokes on the diagonals, clear of the ticks.
+    vec2 r = abs(p);
+    vec2 d = vec2(r.x + r.y, r.x - r.y) * 0.70710678;
+    float xr0 = gap * 0.6 + 6.0;
+    float hit = uCh.z > 0.0 ? sdBox(d, vec2(xr0 + 3.0, 0.0), vec2(3.0, 0.75)) : 1e3;
+    float shape = min(min(ticks, dot), hit);
+    // The edge: a dark line a pixel wide round every piece, falling off quickly (no haze).
+    float edge = 1.0 - smoothstep(0.0, 1.25, shape);
+    outc = mix(outc, vec3(0.0), edge * 0.7 * uCh.y);
+    vec3 col = vec3(0.86, 1.0, 0.9);
+    outc = mix(outc, col, (1.0 - smoothstep(-aa, aa, min(ticks, dot))) * uCh.y);
+    outc = mix(outc, vec3(1.0), (1.0 - smoothstep(-aa, aa, hit)) * uCh.z * uCh.y);
   }
 
   gl_FragColor = vec4(clamp(outc, 0.0, 1.0), 1.0);

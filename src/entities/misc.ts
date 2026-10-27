@@ -65,6 +65,10 @@ export class TriggerVolume extends Entity {
     return this.event || this.name || `trigger:${this.id}`
   }
 
+  override eventsFired(): string[] {
+    return [this.eventName, `${this.eventName}:exit`]
+  }
+
   override onUpdate(_dt: number): void {
     if (this.spent) return
     // Rebuilt every tick from the live position — six additions. Computed once at

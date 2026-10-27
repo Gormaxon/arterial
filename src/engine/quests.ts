@@ -99,6 +99,11 @@ export class QuestSystem {
     events.tap((name, payload) => this.hear(name, payload))
   }
 
+  /** Every quest registered, by id. */
+  ids(): string[] {
+    return [...this.runs.keys()]
+  }
+
   register(def: QuestDef): void {
     this.runs.set(def.id, { def, state: 'inactive', progress: def.objectives.map(() => 0) })
     this.version++

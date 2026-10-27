@@ -88,6 +88,17 @@ export abstract class Entity {
     this.object.matrixAutoUpdate = !this.isStatic
   }
 
+  /**
+   * The names this fires on the world's bus, and the names it listens for: what an editor offers when a name is to be
+   * picked (a door's "opens on", a spawner's "all dead, fires"), so it is chosen from what the level has, not typed.
+   */
+  eventsFired(): string[] {
+    return []
+  }
+  eventsHeard(): string[] {
+    return []
+  }
+
   onSpawn(): void {}
   onUpdate(_dt: number): void {}
   onDestroy(): void {}

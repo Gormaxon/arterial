@@ -12,8 +12,10 @@
  * SUB-OBJECTIVES. An objective can be made of smaller ones (`subs`): the steps within a step of a mission — "sweep the
  * facility" as clear reception, clear storage, clear the hall. Each is an objective like any other, finished by its own
  * events; the objective they make up is done when its required ones are (any order, or one at a time: `subsOrdered`).
- * They are live only while the objective they belong to is. An objective (or a sub) can also be finished by a set of
- * events each happening once (`all`), not one event some number of times: "both of reception's spawners cleared".
+ * They are live once the objective they belong to is: while it is, and after it is done (its required ones done), the
+ * rest of them — the optional ones — still count while the quest runs. An objective (or a sub) can also be finished by
+ * a set of events each happening once (`all`), not one event some number of times: "both of reception's spawners
+ * cleared".
  *
  * The system keeps state and says what it is; it draws nothing. It outlives level loads
  * (it hears events through the bus's tap), so progress is not lost when a level is replaced.
@@ -259,7 +261,7 @@ export class QuestSystem {
       objectives: run.def.objectives.map((o, i) => {
         const subs = o.subs ?? []
         const raw = run.subs[i]!
-        const subLive = live.has(i) ? liveIn(subs, raw, o.subsOrdered === true) : new Set<number>()
+        const subLive = live.has(i) || (subs.length > 0 && this.objectiveDone(run, i)) ? liveIn(subs, raw, o.subsOrdered === true) : new Set<number>()
         return {
           id: o.id,
           text: o.text,
@@ -307,10 +309,16 @@ export class QuestSystem {
       if (run.state !== 'active') continue
       const live = this.liveObjectives(run)
       const doneNow: number[] = []
+      // What it says on the bus, sent once all of this event is counted. Sent as it happened, the bus handed it straight
+      // back here (its tap): the sub that finished the quest finished it in the middle of the count, and the objective
+      // it finished was announced after the mission was.
+      const said: [string, unknown][] = []
       run.def.objectives.forEach((o, i) => {
-        if (!live.has(i)) return
         if (o.subs?.length) {
-          // Its subs count instead; it is done when they are.
+          // Its subs count instead; it is done when they are. Live while it is — and once it is done, those of them left
+          // (the optional ones) still count while the quest runs: "clear security", off the way, can be done after.
+          const wasDone = this.objectiveDone(run, i)
+          if (!live.has(i) && !wasDone) return
           const raw = run.subs[i]!
           const subLive = liveIn(o.subs, raw, o.subsOrdered === true)
           let changed = false
@@ -322,15 +330,17 @@ export class QuestSystem {
             changed = true
             if (done(x, next)) {
               this.notify({ kind: 'sub', quest: run.def.id, objective: o.id, sub: x.id, text: x.text })
-              this.events.emit('quest:subobjective', { quest: run.def.id, objective: o.id, sub: x.id })
+              said.push(['quest:subobjective', { quest: run.def.id, objective: o.id, sub: x.id }])
             }
           })
           if (changed) {
             this.version++
-            if (this.objectiveDone(run, i)) doneNow.push(i)
+            // Done by this event (not again by an optional sub of one done already).
+            if (!wasDone && this.objectiveDone(run, i)) doneNow.push(i)
           }
           return
         }
+        if (!live.has(i)) return
         const next = advance(o, run.progress[i]!, name, payload)
         if (next === run.progress[i]) return
         run.progress[i] = next
@@ -340,7 +350,7 @@ export class QuestSystem {
       for (const i of doneNow) {
         const o = run.def.objectives[i]!
         this.notify({ kind: 'objective', quest: run.def.id, objective: o.id, text: o.text })
-        this.events.emit('quest:objective', { quest: run.def.id, objective: o.id })
+        said.push(['quest:objective', { quest: run.def.id, objective: o.id }])
       }
       // Finished when every required objective is.
       const finished = run.def.objectives.every((o, i) => o.optional || this.objectiveDone(run, i))
@@ -349,9 +359,9 @@ export class QuestSystem {
         this.version++
         const reward = run.def.reward ?? null
         this.notify({ kind: 'completed', quest: run.def.id, title: run.def.title, reward })
-        this.events.emit('quest:completed', { quest: run.def.id, reward })
-        this.events.emit(`quest:completed:${run.def.id}`, reward)
+        said.push(['quest:completed', { quest: run.def.id, reward }], [`quest:completed:${run.def.id}`, reward])
       }
+      for (let k = 0; k < said.length; k++) this.events.emit(said[k]![0], said[k]![1])
     }
   }
 

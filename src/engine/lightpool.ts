@@ -23,6 +23,8 @@ interface Slot {
   source: PointSource | null
   level: number
   target: number
+  /** The colour last given the light (setHex converts colour space each call: only on a change). */
+  hex: number
 }
 
 /** How many point lights are ever live at once: every lit pixel pays for each, and a sealed room needs its own lamp or two. */
@@ -33,6 +35,9 @@ const FADE = 0.25
 export class LightPool {
   private readonly sources: PointSource[] = []
   private readonly slots: Slot[] = []
+  /** Reused by update: the sources wanted this frame, nearest first, and how near. */
+  private readonly wanted: PointSource[] = []
+  private readonly scores: number[] = []
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -55,7 +60,7 @@ export class LightPool {
     if (this.slots.length < this.max && this.sources.length > this.slots.length) {
       const light = new THREE.PointLight(0xffffff, 0, 0)
       this.scene.add(light)
-      this.slots.push({ light, source: null, level: 0, target: 0 })
+      this.slots.push({ light, source: null, level: 0, target: 0, hex: -1 })
     }
     // While everything fits, each source takes a slot at once, fully lit.
     if (this.sources.length <= this.slots.length) this.assignDirect()
@@ -97,7 +102,10 @@ export class LightPool {
       return
     }
     slot.light.position.copy(s.position)
-    slot.light.color.setHex(s.color)
+    if (slot.hex !== s.color) {
+      slot.hex = s.color
+      slot.light.color.setHex(s.color)
+    }
     slot.light.distance = s.distance
     slot.light.intensity = s.intensity * slot.level
   }
@@ -109,31 +117,52 @@ export class LightPool {
       for (const slot of this.slots) this.apply(slot)
       return
     }
-    // How far each source is from mattering: its distance, less half its reach.
-    const wanted = this.sources
-      .map((s) => ({ s, score: s.position.distanceTo(camera) - (s.distance || 40) * 0.5 }))
-      .sort((a, b) => a.score - b.score)
-      .slice(0, this.slots.length)
-      .map((w) => w.s)
-    const want = new Set(wanted)
-    for (const slot of this.slots) {
-      if (slot.source && !want.has(slot.source)) slot.target = 0
-      else if (slot.source) slot.target = 1
+    // How far each source is from mattering: its distance, less half its reach. The nearest (as many as there are
+    // slots) kept by insertion into a small fixed list — no arrays, sets or closures a frame.
+    const n = this.slots.length
+    const wanted = this.wanted
+    const scores = this.scores
+    wanted.length = 0
+    scores.length = 0
+    const sources = this.sources
+    for (let i = 0; i < sources.length; i++) {
+      const s = sources[i]!
+      const score = s.position.distanceTo(camera) - (s.distance || 40) * 0.5
+      if (wanted.length === n && score >= scores[n - 1]!) continue
+      let j = wanted.length < n ? wanted.length : n - 1
+      while (j > 0 && scores[j - 1]! > score) {
+        scores[j] = scores[j - 1]!
+        wanted[j] = wanted[j - 1]!
+        j--
+      }
+      scores[j] = score
+      wanted[j] = s
     }
-    const held = new Set(this.slots.map((sl) => sl.source))
-    for (const s of wanted) {
-      if (held.has(s)) continue
-      const free = this.slots.find((sl) => sl.source === null || (sl.target === 0 && sl.level <= 0.02))
+    const slots = this.slots
+    for (let i = 0; i < n; i++) {
+      const slot = slots[i]!
+      if (slot.source) slot.target = wanted.includes(slot.source) ? 1 : 0
+    }
+    for (let w = 0; w < wanted.length; w++) {
+      const s = wanted[w]!
+      let held = false
+      for (let i = 0; i < n; i++) if (slots[i]!.source === s) held = true
+      if (held) continue
+      let free: Slot | null = null
+      for (let i = 0; i < n && !free; i++) {
+        const sl = slots[i]!
+        if (sl.source === null || (sl.target === 0 && sl.level <= 0.02)) free = sl
+      }
       if (!free) continue
       free.source = s
       free.level = 0
       free.target = 1
-      held.add(s)
     }
     const step = dt / FADE
-    for (const slot of this.slots) {
+    for (let i = 0; i < n; i++) {
+      const slot = slots[i]!
       slot.level += Math.max(-step, Math.min(step, slot.target - slot.level))
-      if (slot.target === 0 && slot.level <= 0.02 && slot.source && !want.has(slot.source)) {
+      if (slot.target === 0 && slot.level <= 0.02 && slot.source && !wanted.includes(slot.source)) {
         // Faded out and no longer wanted: free for the next source.
         slot.source = null
         slot.level = 0

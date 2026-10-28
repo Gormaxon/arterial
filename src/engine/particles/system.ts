@@ -80,6 +80,8 @@ const _deathAt = new THREE.Vector3()
 const _streamOpts: FireOptions = {}
 const UP = new THREE.Vector3(0, 1, 0)
 const NO_OPTS: FireOptions = {}
+/** Reused by onEvent: an `fx` event's options. */
+const _evOpts: FireOptions = {}
 /** Seconds a tracer takes to burn out after its round has stopped (see endTracer; the shader knows it too). */
 export const TRACER_LINGER = 0.09
 
@@ -502,14 +504,24 @@ export class ParticleWorld {
     const at = toVec(p.at, _wp)
     if (!at) return
     const dir = toVec(p.dir, _wd)
-    this.fire(p.effect, at.clone(), { dir: dir ? dir.clone().normalize() : undefined, intensity: typeof p.intensity === 'number' ? p.intensity : undefined })
+    // One options object, reused: fire reads it and keeps nothing of it (nor of `at`).
+    const o = _evOpts
+    o.dir = dir ? dir.normalize() : undefined
+    o.intensity = typeof p.intensity === 'number' ? p.intensity : undefined
+    this.fire(p.effect, at, o)
   }
 
   // --- per frame -----------------------------------------------------------
 
+  private streamDt = 0
+  private streamEach(e: ParticleEmitter): void {
+    this.stream(e, this.streamDt)
+  }
+
   /** Advance the clock, run the emitters, step the chunks, send what was born. Once per rendered frame. */
   update(dt: number, camera?: THREE.Camera): void {
     this.time += dt
+    this.streamDt = dt
     if (this.time > 2048) {
       // Float precision: keep the clock small. Every birth time shifts with it.
       for (const b of this.batchList) b.rebase(1024)
@@ -520,7 +532,7 @@ export class ParticleWorld {
       camera.getWorldPosition(this.focus)
       this.seenView = true
     }
-    if (this.emitters.size > 0) for (const e of this.emitters) this.stream(e, dt)
+    if (this.emitters.size > 0) this.emitters.forEach(this.streamEach, this)
     for (let i = 0; i < this.chunkList.length; i++) {
       const pool = this.chunkList[i]!
       if (pool.active > 0) pool.update(dt)

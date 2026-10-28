@@ -171,7 +171,7 @@ export class Loop {
     }
     // Ran out of step budget: drop the backlog rather than carrying it into the next
     // frame, where it would compound into a spiral of death.
-    if (steps === MAX_STEPS) this.accumulator = 0
+    if (steps === MAX_STEPS && this.accumulator >= SIM_DT) this.accumulator %= SIM_DT
     const simMs = performance.now() - simStart
 
     const renderStart = performance.now()

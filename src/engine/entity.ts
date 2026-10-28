@@ -39,6 +39,9 @@ export abstract class Entity {
   /** Transform holder. Visual entities parent their meshes to this. */
   readonly object = new THREE.Object3D()
   enabled = true
+  /** Taken out of its world (World.remove): skipped by the rest of the step it went in, even though that step's list
+   * was copied before it went. */
+  removed = false
   /** Made while the game runs (an enemy a spawner put out), not part of the level: never saved with it. */
   transient = false
 

@@ -75,6 +75,17 @@ export class NavGrid {
 
   constructor(private readonly collision: CollisionSystem) {}
 
+  /** The level it was built for is gone (World.clear): ask nothing of it until the next one's grid is built — its cells
+   * and field would lead the new level's crowd by the old one's walls. */
+  forget(): void {
+    this.ready = false
+    this.fieldReady = false
+    this.filling = false
+    this.target = -1
+    this.building = null
+    this.builtFor = ''
+  }
+
   // ---- the grid ----------------------------------------------------------------------------------------------------
 
   /** The grid built whole, now (a small level, a test). */

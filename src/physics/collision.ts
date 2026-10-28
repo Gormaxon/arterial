@@ -299,7 +299,11 @@ export class CollisionSystem {
    * filing would have it. A still body is filed again. (A man's box is then worked out when something first asks for it,
    * not also as a side effect of every arrival and death: never older than before, and with any turn he made since.)
    */
+  /** Counts every body added or taken away: whoever keeps hold of bodies can tell nothing went without searching for it. */
+  dynamicsVersion = 0
+
   addDynamic(body: DynamicBody): void {
+    this.dynamicsVersion++
     this.dynamics.push(body)
     if (this.filed && !body.still) this.unfiled.push(body)
     else this.filed = false
@@ -309,6 +313,7 @@ export class CollisionSystem {
     const i = this.dynamics.indexOf(body)
     // (Not there — a dead man's wreck taken away: he went when he died.)
     if (i < 0) return
+    this.dynamicsVersion++
     this.dynamics.splice(i, 1)
     const j = this.filed && !body.still ? this.unfiled.indexOf(body) : -1
     if (j >= 0) this.unfiled.splice(j, 1)
@@ -626,7 +631,9 @@ export class CollisionSystem {
     const minX = Math.min(x0, x1), maxX = Math.max(x0, x1)
     const minY = Math.min(y0, y1), maxY = Math.max(y0, y1)
     const minZ = Math.min(z0, z1), maxZ = Math.max(z0, z1)
-    for (const chunk of this.chunkList) {
+    const chunks = this.chunkList
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const chunk = chunks[ci]!
       const b = chunk.bounds
       if (swept && (b.min.x > maxX || b.max.x < minX || b.min.y > maxY || b.max.y < minY || b.min.z > maxZ || b.max.z < minZ)) continue
       // Only cells the ray enters within what it has left to travel.

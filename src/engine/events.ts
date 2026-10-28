@@ -31,16 +31,26 @@ export class EventBus {
    */
   tap(fn: (name: string, payload: unknown) => void): void {
     this.taps.add(fn)
+    this.tapList = null
   }
 
   emit<T>(name: string, payload: T): void {
-    for (const t of [...this.taps]) t(name, payload)
+    // The taps as an array, made again only when one is added: emit runs for every shot, hit and effect, and two fresh
+    // copies an event were steady garbage on the Chromebook.
+    let taps = this.tapList
+    if (!taps) taps = this.tapList = [...this.taps]
+    for (let i = 0; i < taps.length; i++) taps[i]!(name, payload)
     const set = this.map.get(name)
-    if (!set) return
+    if (!set || set.size === 0) return
+    if (set.size === 1) {
+      for (const fn of set) (fn as Listener<T>)(payload)
+      return
+    }
     // Copy before iterating: a listener that unsubscribes itself (common for
     // once-only triggers) would otherwise mutate the set mid-iteration.
     for (const fn of [...set]) (fn as Listener<T>)(payload)
   }
+  private tapList: ((name: string, payload: unknown) => void)[] | null = null
 
   clear(): void {
     this.map.clear()

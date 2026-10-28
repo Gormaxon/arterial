@@ -231,8 +231,9 @@ export class Input {
 
     this.reconcileModifiers(e)
 
-    // Browser auto-repeat would re-fire the edge while a key is merely held.
-    if (!this.keys.has(e.code)) {
+    // Browser auto-repeat would re-fire the edge while a key is merely held (and, once a lost lock or focus has let
+    // go of every key, would read the held one as a fresh press).
+    if (!e.repeat && !this.keys.has(e.code)) {
       this.edges.add(e.code)
       if (e.code === 'Space') this.spacePresses++
     }

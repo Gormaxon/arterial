@@ -65,13 +65,18 @@ export class LevelSet {
   /** A load under way, and one asked for while it was. */
   private loading: Promise<boolean> | null = null
   private queued: { id: string; opts?: LoadOptions } | null = null
+  /** What the queued ask resolves to: every caller that asked while one was loading hears how the latest went. */
+  private queuedDone: Promise<boolean> | null = null
+  /** An exit heard and not yet acted on: a second exit in the same step (two triggers, a boss and a quest) is the same
+   * way out, not a second one — it would otherwise complete the level just loaded too, and skip one. */
+  private leaving = false
 
   constructor(private readonly world: World) {
     world.events.tap((name, payload) => {
       if (name === LEVEL_EXIT) {
         const to = (payload as { to?: unknown } | null)?.to
         this.later(() => this.leave(typeof to === 'string' ? to : undefined))
-      } else if (name.startsWith(LEVEL_GOTO_PREFIX)) {
+      } else if (name.charCodeAt(0) === 108 /* l */ && name.startsWith(LEVEL_GOTO_PREFIX)) {
         const to = name.slice(LEVEL_GOTO_PREFIX.length)
         this.later(() => this.leave(to))
       }
@@ -121,14 +126,14 @@ export class LevelSet {
   async load(id: string, opts?: LoadOptions): Promise<boolean> {
     if (this.loading) {
       this.queued = { id, opts }
-      return this.loading.then(() => this.drain())
+      if (!this.queuedDone) this.queuedDone = this.loading.then(() => this.drain(), () => this.drain())
+      return this.queuedDone
     }
     this.loading = this.loadNow(id, opts)
     try {
       return await this.loading
     } finally {
       this.loading = null
-      if (this.queued) void this.drain()
     }
   }
 
@@ -188,11 +193,19 @@ export class LevelSet {
   private drain(): Promise<boolean> {
     const q = this.queued
     this.queued = null
+    this.queuedDone = null
     return q ? this.load(q.id, q.opts) : Promise.resolve(false)
   }
 
-  /** After the step that announced it: a level is not replaced from under the entities being updated. */
+  /** After the step that announced it: a level is not replaced from under the entities being updated. Once per way
+   * out: further exits are ignored until that one's level is in. */
   private later(fn: () => Promise<boolean>): void {
-    void Promise.resolve().then(fn)
+    if (this.leaving) return
+    this.leaving = true
+    void Promise.resolve()
+      .then(fn)
+      .finally(() => {
+        this.leaving = false
+      })
   }
 }

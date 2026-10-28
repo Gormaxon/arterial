@@ -307,6 +307,7 @@ export class World {
       if (n) this.idCounter = Math.max(this.idCounter, Number(n[1]))
     }
     entity.world = this
+    entity.removed = false
     this.entities.set(entity.id, entity)
 
     let types = this.byType.get(entity.type)
@@ -336,6 +337,7 @@ export class World {
 
   remove(entity: Entity): void {
     if (!this.entities.delete(entity.id)) return
+    entity.removed = true
     entity.onDestroy()
     this.byType.get(entity.type)?.delete(entity)
     for (const tag of entity.tags) this.byTag.get(tag)?.delete(entity)
@@ -344,6 +346,8 @@ export class World {
     // Gone for good: not put back in the scene when build mode thaws the rest (freezeStill).
     const u = this.undrawn.indexOf(entity.object)
     if (u >= 0) this.undrawn.splice(u, 1)
+    const r = this.frozenRoots.indexOf(entity.object)
+    if (r >= 0) this.frozenRoots.splice(r, 1)
   }
 
   // --- lookup --------------------------------------------------------------
@@ -571,7 +575,8 @@ export class World {
     this.frameOpen = true
     this.frameEntityMs = 0
     this.stepEntityMs = 0
-    for (const k in this.timings) this.timings[k] = 0
+    const tm = this.timings
+    for (const k in tm) tm[k] = 0
     // The crowd's way to you (engine/navgrid.ts): a slice of it a frame — here, before the steps, unless the game
     // gives it the end of its frames instead (navSlice).
     if (!this.navAtFrameEnd) this.navTick(Infinity)
@@ -664,7 +669,7 @@ export class World {
     frame.length = 0
     for (let i = 0; i < list.length; i++) {
       const e = list[i]!
-      if (!e.enabled) continue
+      if (!e.enabled || e.removed) continue
       if (e.tickPerFrame) {
         e.frameOwed += dt
         if (open) frame.push(e)
@@ -683,6 +688,7 @@ export class World {
       const maxWait = low ? this.frameDeferLowS : FRAME_DEFER_MAX_S
       for (let k = 0; k < n; k++) {
         const e = frame[(start + k) % n]!
+        if (e.removed) continue
         if (framed >= budget && e.frameOwed < maxWait && !e.frameUrgent) {
           if (next < 0) next = (start + k) % n
           continue
@@ -702,7 +708,8 @@ export class World {
   }
 
   spawnPoint(): SpawnPoint | null {
-    return this.ofType<SpawnPoint>('spawn')[0] ?? null
+    for (const e of this.typeView('spawn')) return e as SpawnPoint
+    return null
   }
 
   serialize(): LevelFile {
@@ -728,6 +735,7 @@ export class World {
     this.events.clear()
     this.statics.clear()
     this.particles.clear()
+    this.nav.forget()
     // The pool's lights are kept for reuse; only the placed sources went with their entities.
   }
 }

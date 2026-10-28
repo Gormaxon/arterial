@@ -75,15 +75,16 @@ export class NavGrid {
 
   constructor(private readonly collision: CollisionSystem) {}
 
-  /** The level it was built for is gone (World.clear): ask nothing of it until the next one's grid is built — its cells
-   * and field would lead the new level's crowd by the old one's walls. */
+  /**
+   * The level it was worked out for is gone (World.clear): its way to you is not asked for again until worked out afresh
+   * — it would lead the next level's crowd by the old one's walls. The grid itself is kept: it is built again only if the
+   * next level's collision differs (`current`), and a level loaded again as it was (every restart) keeps it: built anew
+   * each time, it was seconds of a slow machine's frames after every restart.
+   */
   forget(): void {
-    this.ready = false
     this.fieldReady = false
     this.filling = false
     this.target = -1
-    this.building = null
-    this.builtFor = ''
   }
 
   // ---- the grid ----------------------------------------------------------------------------------------------------

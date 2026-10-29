@@ -49,6 +49,7 @@ uniform float uRcas;
 uniform float uConcuss;
 uniform float uShock;
 uniform vec2 uShockAt;
+uniform float uSlow;
 // The crosshair and the visor's compass tape, drawn here rather than as page elements over the canvas (Upscaler.hud).
 uniform vec2 uRes;
 uniform float uCss;
@@ -119,7 +120,7 @@ void main() {
   // Colour fringing: red pushed out, blue pulled in, growing with the square of the
   // distance from the middle, so the crosshair sits on a clean image. The sharpening
   // delta rides along on each shifted channel, so the detail is not lost to the shift.
-  vec2 shift = d * (0.0055 * r2 + 0.012 * uPulse + 0.03 * uConcuss) * uStrength;
+  vec2 shift = d * (0.0055 * r2 + 0.012 * uPulse + 0.03 * uConcuss + 0.022 * r2 * uSlow) * uStrength;
   vec3 detail = outc - c;
   float rr = texture2D(tFrame, uv + shift).r;
   float bb = texture2D(tFrame, uv - shift).b;
@@ -137,6 +138,28 @@ void main() {
     // The colour knocked out of it, and the edges closing in.
     outc = mix(outc, vec3(dot(outc, vec3(0.299, 0.587, 0.114))), 0.45 * k);
     outc *= 1.0 - 0.5 * smoothstep(0.05, 0.4, r2) * k;
+  }
+  if (uSlow > 0.0) {
+    // Time slowed (see Upscaler.slowTime). Fine uneven streaks drawn in toward the middle from the edges, as if the
+    // light were being dragged along behind the view; the middle, where the shot is lined up, left sharp.
+    float k = uSlow;
+    float edge = smoothstep(0.02, 0.38, r2) * k;
+    float ang = atan(da.y, da.x);
+    float rays = 0.55 + 0.45 * sin(ang * 29.0 + sin(ang * 11.0 + uTime * 0.35) * 2.4);
+    vec2 pull = d * 0.065 * edge * rays;
+    vec3 streak = (texture2D(tFrame, uv - pull * 0.33).rgb + texture2D(tFrame, uv - pull * 0.66).rgb + texture2D(tFrame, uv - pull).rgb) * (1.0 / 3.0);
+    outc = mix(outc, streak, 0.7 * edge);
+    // The colour drained toward a cold steel blue — except what burns bright and coloured (a tracer, a muzzle flash, a
+    // blast), which keeps its colour and stands out of the grey: the things worth timing a shot by.
+    float l = dot(outc, vec3(0.299, 0.587, 0.114));
+    float hi = max(outc.r, max(outc.g, outc.b));
+    float keep = smoothstep(0.5, 0.9, hi) * smoothstep(0.12, 0.4, hi - min(outc.r, min(outc.g, outc.b)));
+    vec3 cold = l * vec3(0.8, 0.93, 1.1) + vec3(0.0, 0.008, 0.03);
+    outc = mix(outc, cold, 0.78 * k * (1.0 - keep));
+    // A touch more contrast so the grey still reads crisp, and the edges closing in toward a deep blue-black.
+    outc = mix(outc, (outc - 0.45) * 1.08 + 0.45, k);
+    float rim = smoothstep(0.06, 0.42, r2) * k;
+    outc = outc * (1.0 - 0.34 * rim) + vec3(0.0, 0.006, 0.022) * rim;
   }
 
   float luma = dot(outc, vec3(0.299, 0.587, 0.114));
@@ -281,6 +304,7 @@ export class Upscaler {
         uConcuss: { value: 0 },
         uShock: { value: 1 },
         uShockAt: { value: new THREE.Vector2(0.5, 0.5) },
+        uSlow: { value: 0 },
         uStrength: { value: 1 },
         uAspect: { value: 16 / 9 },
         uRcas: { value: Math.pow(2, -RCAS_STOPS) },
@@ -425,6 +449,18 @@ export class Upscaler {
     this.shockAt.set(at?.x ?? 0.5, at?.y ?? 0.5)
   }
 
+  /** The view clear of any blast at once: no shock front, no swimming. For a fresh life — none of the last one's blast carries into it. */
+  clearConcussion(): void {
+    this.concussion = 0
+    this.shockT = 9
+  }
+
+  /**
+   * How far time has been slowed, 0..1, eased by the caller: the colour drained cold (all but what burns bright), the
+   * edges pulled in, streaked and fringed toward the middle. Three more taps a pixel while it is above 0, none at 0.
+   */
+  slowTime = 0
+
   /** Start drawing a frame into the offscreen buffer. */
   begin(): void {
     this.ensureMsaa()
@@ -495,6 +531,7 @@ export class Upscaler {
     u.uShock!.value = Math.min(1, this.shockT / 0.6)
     ;(u.uShockAt!.value as THREE.Vector2).copy(this.shockAt)
     u.uStrength!.value = this.strength
+    u.uSlow!.value = Math.max(0, Math.min(1, this.slowTime)) * this.strength
     // Wrapped so the float stays precise over a long session.
     u.uTime!.value = (performance.now() / 1000) % 600
     this.resolve()

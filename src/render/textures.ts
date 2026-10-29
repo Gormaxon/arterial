@@ -11,6 +11,7 @@
  */
 
 import * as THREE from 'three'
+import { fetchBytes } from '../core/fetchbytes'
 
 /**
  * Texture resolution.
@@ -714,23 +715,10 @@ export interface BakedProgress {
   total: number
 }
 
-/** Fetch a file as a Blob, reporting bytes as they arrive. */
+/** Fetch a file as a Blob, reporting bytes as they arrive; a stalled or dropped download is asked for again (core/fetchbytes.ts). */
 async function fetchBlob(url: string, onChunk: (loaded: number, total: number) => void): Promise<Blob> {
-  const r = await fetch(url)
-  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`)
-  const total = Number(r.headers.get('content-length')) || 0
-  if (!r.body) return r.blob()
-  const reader = r.body.getReader()
-  const parts: Uint8Array[] = []
-  let loaded = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    parts.push(value)
-    loaded += value.length
-    onChunk(loaded, total)
-  }
-  return new Blob(parts as BlobPart[], { type: r.headers.get('content-type') ?? 'image/webp' })
+  const { bytes, type } = await fetchBytes(url, { onProgress: onChunk })
+  return new Blob([bytes as BlobPart], { type: type ?? 'image/webp' })
 }
 
 /** A texture over an already-decoded bitmap. Same settings as `toTexture`. */

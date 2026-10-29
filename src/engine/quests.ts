@@ -240,11 +240,24 @@ export class QuestSystem {
     return out
   }
 
-  /** Put quests back as `serialize` left them. Unknown ids are ignored. */
+  /** Every quest back to not started, its progress gone: the whole of a mission played again from the start. */
+  resetAll(): void {
+    for (const id of this.runs.keys()) this.reset(id)
+  }
+
+  /**
+   * Put quests back as `serialize` left them: each one in it as it was, and each one not in it not started (it had not
+   * been, or `serialize` would have it) — a checkpoint brought back is the quests as they were then, not as they are
+   * now. Unknown ids are ignored. Nothing is announced: no quest starts or finishes by being put back.
+   */
   restore(save: QuestSave): void {
-    for (const [id, s] of Object.entries(save)) {
-      const run = this.runs.get(id)
-      if (!run) continue
+    for (const [id, run] of this.runs) {
+      const s = save[id]
+      if (!s) {
+        run.state = 'inactive'
+        Object.assign(run, fresh(run.def))
+        continue
+      }
       run.state = s.state
       run.progress = run.def.objectives.map((_, i) => s.progress[i] ?? 0)
       run.subs = run.def.objectives.map((o, i) => (o.subs ?? []).map((_, j) => s.subs?.[i]?.[j] ?? 0))

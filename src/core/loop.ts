@@ -69,6 +69,15 @@ export class Loop {
    */
   private holdUntil = 0
   private holdScale = 1
+  /**
+   * A lasting slow-down of the world, 0..1 of real time (1: none), eased by whoever sets it, between frames. Unlike a
+   * hit-stop, which spaces the steps out (a beat that short never shows it), this one SHRINKS each step: the world still
+   * moves on every frame, so seconds of it at a quarter speed are as smooth as full speed — nothing stepping at 15 Hz.
+   * The per-frame input still reads real time, so the view turns as fast as the hand does.
+   */
+  slow = 1
+  /** This frame's real time, seconds (clamped as the simulation's is): what a per-frame reader that must not slow eases by. */
+  realDt = 0
 
   private accumulator = 0
   private last = 0
@@ -147,12 +156,18 @@ export class Loop {
     return performance.now() < this.holdUntil
   }
 
+  /** How fast the world runs against real time right now: a hit-stop and the slow-down together. */
+  get scale(): number {
+    return (performance.now() < this.holdUntil ? this.holdScale : 1) * this.slow
+  }
+
   advance(frameMs: number): void {
     this.step(frameMs)
   }
 
   private step(frameMs: number): void {
     this.frameStart = performance.now()
+    this.realDt = Math.min(frameMs, 250) / 1000
     if (this.simulate) {
       // Clamp the delta itself as well: a single 5 s hitch should resume, not fast-forward.
       const scale = performance.now() < this.holdUntil ? this.holdScale : 1
@@ -164,8 +179,10 @@ export class Loop {
 
     const simStart = performance.now()
     let steps = 0
+    // Read after beginFrame, which is where the slow-down is eased: every step of a frame is the same length.
+    const dt = SIM_DT * Math.max(0.01, Math.min(1, this.slow))
     while (this.simulate && this.accumulator >= SIM_DT && steps < MAX_STEPS) {
-      this.fixed(SIM_DT)
+      this.fixed(dt)
       this.accumulator -= SIM_DT
       steps++
     }

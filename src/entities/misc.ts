@@ -89,6 +89,17 @@ export class TriggerVolume extends Entity {
     }
   }
 
+  /** For a checkpoint (engine/checkpoints.ts): spent stays spent, and you inside it (as you are, at one) does not walk in again. */
+  override saveState(): unknown {
+    return this.inside || this.spent ? { inside: this.inside, spent: this.spent } : undefined
+  }
+
+  override loadState(state: unknown): void {
+    const s = state as { inside?: unknown; spent?: unknown } | null
+    this.inside = s?.inside === true
+    this.spent = s?.spent === true
+  }
+
   protected override serializeProps(): Record<string, unknown> {
     const props: Record<string, unknown> = {
       size: [round(this.size.x), round(this.size.y), round(this.size.z)],

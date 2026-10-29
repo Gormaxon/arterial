@@ -21,6 +21,13 @@ const SPIKE_RATIO = 6
 /** ...which are those of the last this many milliseconds (continuous movement). */
 const SPIKE_WINDOW_MS = 60
 
+/** How long the browser refuses a re-lock after the pointer was let go (Chrome: about a second), with some to spare. */
+const LOCK_COOLDOWN_MS = 1150
+/** The soonest a refused lock is asked for again. */
+const LOCK_RETRY_MIN_MS = 200
+/** A request neither granted nor refused in this long is taken as refused. */
+const LOCK_PENDING_MS = 2000
+
 export class Input {
   readonly keys = new Set<string>()
   private readonly mouseButtons = new Set<number>()
@@ -44,6 +51,7 @@ export class Input {
     addEventListener('keydown', this.onKeyDown)
     addEventListener('keyup', this.onKeyUp)
     document.addEventListener('pointerlockchange', this.onPointerLockChange)
+    document.addEventListener('pointerlockerror', this.onPointerLockError)
     // Pointer events carry the device's individual reports (getCoalescedEvents) with their own times.
     addEventListener('pointermove', this.onPointerMove)
     addEventListener('mousedown', this.onMouseDown)
@@ -105,40 +113,136 @@ export class Input {
     this.scripted = false
   }
 
+  /**
+   * Whether the game lets the pointer be held at all just now (not while a menu of its own wants a free cursor, say).
+   * Asked whenever a lock would be requested and whenever one lands: a lock that arrives when it is not allowed (one
+   * asked for before the menu opened) is let go at once instead of capturing the cursor over the menu.
+   */
+  lockAllowed: () => boolean = () => true
+
+  /**
+   * The pointer is wanted held but is not yet: a request is with the browser, or it was refused and is to be asked for
+   * again once the browser will grant it. A game should treat this as still playing (no pause menu): the lock is on
+   * its way, and `onLockChange(false)` says so if it is given up.
+   */
+  get lockWanted(): boolean {
+    return this.want && !this.locked
+  }
+
+  /**
+   * Ask for the pointer. Safe to call at any time and as often as liked: it is the one way the lock is taken, and the
+   * state it keeps (wanted, in flight, held) is the one owner of whether the pointer is meant to be captured.
+   *
+   * The browser grants a lock only inside a user gesture (or, after the page itself let go with exitPointerLock, without
+   * one), and refuses one asked for within about a second of the player leaving it with Esc — which is exactly what a
+   * quick trip in and out of build mode, or a fast RESUME, looks like. A refused request is not dropped: it is asked
+   * for once more when that cooldown has passed (the click or key that asked is still recent enough to count as the
+   * gesture), and only if that is refused too is it given up, with `onLockChange(false)`, so the game can offer its
+   * own way back (a menu with a button to click). Requests are never stacked: one in flight is waited for.
+   */
   requestLock(): void {
-    // Chrome rejects this outside a user gesture and in a non-secure context. Both
-    // are surfaced to the player in main.ts rather than failing mute.
-    //
-    // Newer Chrome returns a promise and rejects rather than throwing — notably when
-    // the lock was released less than about a second ago, which is exactly what a
-    // quick trip in and out of build mode looks like. An unhandled rejection there
-    // would show up in the console as an error for something that is not one: the
-    // click-to-play overlay is still on screen, so the player can always take the
-    // lock by hand.
-    //
+    this.want = true
+    this.cancelled = false
+    this.retried = false
+    this.cancelRetry()
+    if (this.locked || this.pending) return
+    if (!this.lockAllowed()) {
+      this.want = false
+      return
+    }
+    this.attempt()
+  }
+
+  /** Whether the pointer is meant to be held: from a request until the lock is let go (or given up). */
+  private want = false
+  /** The request with the browser now (0: none). Each has its own number, so a late answer to an old one is ignored. */
+  private pending = 0
+  private requests = 0
+  private pendingTimer: ReturnType<typeof setTimeout> | undefined
+  private retryTimer: ReturnType<typeof setTimeout> | undefined
+  /** A refused request has already been asked for again once; the next refusal gives up. */
+  private retried = false
+  /** When the lock was last let go, for the browser's re-lock cooldown. */
+  private lastUnlock = -Infinity
+  /** The player pressed Esc while a lock was on its way: if it lands, it is let go. */
+  private cancelled = false
+
+  private attempt(): void {
+    const id = ++this.requests
+    this.pending = id
+    clearTimeout(this.pendingTimer)
+    // A browser that neither grants nor refuses (no promise, no error event) must not leave the lock wanted forever.
+    this.pendingTimer = setTimeout(() => this.refused(id), LOCK_PENDING_MS)
     // Raw input where the browser has it (`unadjustedMovement`): the device's own counts, no OS acceleration, and no
     // hidden cursor. Without it Chrome keeps a hidden cursor and warps it back to the middle as it nears an edge, and
     // on Windows that warp sometimes leaks into one report as a huge false movement — the view jerks as if flicked,
-    // most often turning steadily one way. Where raw input is refused (not supported), the plain lock is taken.
-    if (this.rawRefused) {
-      const plain = this.target.requestPointerLock() as unknown
-      if (plain instanceof Promise) plain.catch(() => {})
-      return
-    }
-    let raw: unknown
-    try {
-      raw = (this.target.requestPointerLock as (o?: { unadjustedMovement: boolean }) => unknown).call(this.target, { unadjustedMovement: true })
-    } catch {
-      raw = undefined
-    }
-    if (raw instanceof Promise) {
-      raw.catch((err: unknown) => {
-        if ((err as { name?: string })?.name !== 'NotSupportedError') return
+    // most often turning steadily one way. Where raw input is refused (not supported, or the option itself throws),
+    // the plain lock is taken, at once, while the gesture that asked still counts.
+    let asked: unknown
+    if (!this.rawRefused) {
+      try {
+        asked = (this.target.requestPointerLock as (o?: { unadjustedMovement: boolean }) => unknown).call(this.target, { unadjustedMovement: true })
+      } catch {
         this.rawRefused = true
-        const plain = this.target.requestPointerLock() as unknown
-        if (plain instanceof Promise) plain.catch(() => {})
+      }
+    }
+    if (this.rawRefused) {
+      try {
+        asked = this.target.requestPointerLock() as unknown
+      } catch {
+        this.refused(id)
+        return
+      }
+    }
+    if (asked instanceof Promise) {
+      const raw = !this.rawRefused
+      asked.then(() => {
+        // Granted: no longer in flight (the change event, before or after this, says it is held).
+        if (this.pending !== id) return
+        this.pending = 0
+        clearTimeout(this.pendingTimer)
+      }, (err: unknown) => {
+        if (raw && (err as { name?: string })?.name === 'NotSupportedError' && this.pending === id) {
+          this.rawRefused = true
+          this.pending = 0
+          this.attempt()
+          return
+        }
+        this.refused(id)
       })
     }
+  }
+
+  /** Request `id` was refused (or never answered): asked for again once past the cooldown, else given up. */
+  private refused(id: number): void {
+    if (!id || this.pending !== id) return
+    this.pending = 0
+    clearTimeout(this.pendingTimer)
+    if (!this.want || this.locked) return
+    if (this.retried) {
+      this.want = false
+      this.retried = false
+      this.onLockChange?.(false)
+      return
+    }
+    this.retried = true
+    const wait = Math.max(LOCK_RETRY_MIN_MS, this.lastUnlock + LOCK_COOLDOWN_MS - performance.now())
+    this.cancelRetry()
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined
+      if (!this.want || this.locked || this.pending) return
+      if (!this.lockAllowed()) {
+        this.want = false
+        this.retried = false
+        return
+      }
+      this.attempt()
+    }, wait)
+  }
+
+  private cancelRetry(): void {
+    clearTimeout(this.retryTimer)
+    this.retryTimer = undefined
   }
 
   /** The browser refused raw input once: every later lock is the plain one. */
@@ -231,6 +335,16 @@ export class Input {
 
     this.reconcileModifiers(e)
 
+    // Esc is the browser's own key for letting go of the pointer. Pressed while a lock is still on its way (in flight,
+    // or waiting out the cooldown to be asked again), it means the same: the lock is no longer wanted, and if it lands
+    // it is let go at once.
+    if (e.code === 'Escape' && this.want && !this.locked) {
+      this.want = false
+      this.cancelled = true
+      this.retried = false
+      this.cancelRetry()
+    }
+
     // Browser auto-repeat would re-fire the edge while a key is merely held (and, once a lost lock or focus has let
     // go of every key, would read the held one as a fresh press).
     if (!e.repeat && !this.keys.has(e.code)) {
@@ -319,14 +433,45 @@ export class Input {
   }
 
   private onPointerLockChange = (): void => {
-    this.locked = document.pointerLockElement === this.target
-    if (!this.locked) {
-      this.keys.clear()
-      this.mouseButtons.clear()
-      this.edges.clear()
-      this.motion.length = 0
-      this.recent.length = 0
+    const held = document.pointerLockElement === this.target
+    if (held) {
+      this.pending = 0
+      clearTimeout(this.pendingTimer)
+      this.cancelRetry()
+      this.retried = false
+      if (this.locked) return
+      // A lock that lands after it stopped being wanted (Esc pressed while it was in flight) or while the game wants a
+      // free cursor (a menu opened meanwhile) is let go at once, unannounced: never a captured pointer over a menu.
+      const cancelled = this.cancelled
+      this.cancelled = false
+      if (cancelled || !this.lockAllowed()) {
+        // (Its release, when it comes, finds `locked` never set, and is not news either.)
+        this.want = false
+        document.exitPointerLock?.()
+        return
+      }
+      this.want = true
+      this.locked = true
+      this.onLockChange?.(true)
+      return
     }
-    this.onLockChange?.(this.locked)
+    this.lastUnlock = performance.now()
+    if (!this.locked) return
+    // Let go — by the player (Esc, switching away) or by the page: no longer wanted until asked for again.
+    this.locked = false
+    this.want = false
+    this.keys.clear()
+    this.mouseButtons.clear()
+    this.edges.clear()
+    this.motion.length = 0
+    this.recent.length = 0
+    this.onLockChange?.(false)
+  }
+
+  /** The browser refused a request without rejecting a promise (older browsers): the same as a rejection. */
+  private onPointerLockError = (): void => {
+    // Deferred: where the promise rejects as well, its handler (which may retry without raw input) goes first.
+    const id = this.pending
+    setTimeout(() => this.refused(id), 0)
   }
 }

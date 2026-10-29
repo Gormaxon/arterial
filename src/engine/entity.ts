@@ -106,6 +106,18 @@ export abstract class Entity {
   onUpdate(_dt: number): void {}
   onDestroy(): void {}
 
+  /**
+   * What of it play has changed that a checkpoint must bring back (engine/checkpoints.ts): plain data, or undefined
+   * for nothing (as it starts, or nothing of it changes). Not its level data — that is `serialize`; this is where play
+   * has got it to: a door open, a pickup taken, a fight over. Opt in by overriding both.
+   */
+  saveState(): unknown {
+    return undefined
+  }
+  /** Put back what `saveState` gave, on the entity as the level starts it (loaded afresh, then respawned). The state is
+   * the checkpoint's: read it, do not keep or change it. */
+  loadState(_state: unknown): void {}
+
   /** Subclass-specific fields. Merged into `props` on serialise. */
   protected serializeProps(): Record<string, unknown> {
     return {}

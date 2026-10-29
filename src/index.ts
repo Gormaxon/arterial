@@ -24,6 +24,10 @@ export { CutsceneSystem, PLAY_PREFIX, type CutsceneDef, type CutsceneStep, type 
 export { QuestSystem, START_PREFIX, type QuestDef, type ObjectiveDef, type QuestNotice } from './engine/quests'
 export { BossEncounter, type BossDef, type BossPhaseDef, type BossState, type BossHealth } from './engine/boss'
 export { LevelSet, LEVEL_EXIT, LEVEL_GOTO_PREFIX, type LevelEntry, type LevelSave, type LevelInfo, type LoadOptions } from './engine/levels'
+export { CheckpointSystem, CHECKPOINT_REACHED, CHECKPOINT_SAVED, CHECKPOINT_RESTORED, type CheckpointReached, type MissionPart, type MissionState } from './engine/checkpoints'
+export { armoured, unarmoured, setArmour, DAMAGE_TYPES, NO_ARMOUR, ARMOUR_MAX, type DamageType, type Armour } from './engine/damage'
+export { Upgrades, type UpgradeTrack, type UpgradeSave } from './engine/upgrades'
+export { fetchBytes, fetchArrayBuffer, type FetchOpts } from './core/fetchbytes'
 export { SURFACE_CLASS, surfaceClass, RICOCHET, type SurfaceClass } from './engine/surfaces'
 export * from './engine/particles'
 

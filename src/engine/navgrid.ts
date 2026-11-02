@@ -134,8 +134,9 @@ export class NavGrid {
       }
       yield
     }
-    // Which sides can be crossed: a floor on both sides, a step a man can take, and no wall between at his knees (looked
-    // for both ways: a wall's face is only met from in front of it).
+    // Which sides can be crossed: a floor on both sides, a step a man can take, and no wall between at his knees (faces
+    // turned either way: a wall's face is only met from in front of it, and one cast seeing both is half the casts of
+    // looking from each end).
     const crossable = (a: number, c: number, ax: number, az: number, cx: number, cz: number): boolean => {
       const fa = floor[a]!
       const fc = floor[c]!
@@ -143,10 +144,7 @@ export class NavGrid {
       const y = Math.max(fa, fc) + KNEE
       _o.set(b.min.x + (ax + 0.5) * NAV_CELL, y, b.min.z + (az + 0.5) * NAV_CELL)
       _d.set(cx - ax, 0, cz - az)
-      if (this.collision.raycast(_o, _d, NAV_CELL)) return false
-      _o.set(b.min.x + (cx + 0.5) * NAV_CELL, y, b.min.z + (cz + 0.5) * NAV_CELL)
-      _d.negate()
-      return !this.collision.raycast(_o, _d, NAV_CELL)
+      return !this.collision.raycast(_o, _d, NAV_CELL, THREE.DoubleSide)
     }
     for (let z = 0; z < nz; z++) {
       for (let x = 0; x < nx; x++) {

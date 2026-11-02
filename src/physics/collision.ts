@@ -618,7 +618,8 @@ export class CollisionSystem {
   }
 
   /** Nearest static hit along a ray. Used for line of sight, decals and hitscan. */
-  raycast(origin: THREE.Vector3, direction: THREE.Vector3, far: number): THREE.Intersection | null {
+  /** `side`: which faces count; the default, only those turned toward the ray. */
+  raycast(origin: THREE.Vector3, direction: THREE.Vector3, far: number, side: THREE.Side = THREE.FrontSide): THREE.Intersection | null {
     if (this.chunkList.length === 0) return null
     _castRay.set(origin, direction)
     let best: THREE.Intersection | null = null
@@ -641,7 +642,7 @@ export class CollisionSystem {
         if (!_castRay.intersectBox(chunk.bounds, _hitPoint)) continue
         if (_hitPoint.distanceTo(origin) > reach) continue
       }
-      const hit = chunk.bvh.raycastFirst(_castRay, THREE.FrontSide, 0, reach)
+      const hit = chunk.bvh.raycastFirst(_castRay, side, 0, reach)
       if (hit && hit.faceIndex !== undefined && hit.faceIndex !== null) {
         reach = hit.distance
         hit.faceIndex = chunk.id * FACE_STRIDE + hit.faceIndex

@@ -55,13 +55,13 @@ const uniforms: Uniforms = {
  * darker than the next and carries one of a few muted colour casts (its tone, written by the bake from where it
  * stands), so neighbouring walls read as different walls rather than one grey mass.
  */
-const TEX_CONTRAST = 1.15
-const SHADE_RANGE = 0.18
+export const TEX_CONTRAST = 1.15
+export const SHADE_RANGE = 0.18
 /**
  * The casts, as multipliers of about equal brightness: cool slate, warm sand, sage, plain, dusty rose, steel teal.
  * Roughly a tenth off grey: enough to tell two walls apart, not enough to read as painted.
  */
-const TINTS: [number, number, number][] = [
+export const TINTS: [number, number, number][] = [
   [0.89, 0.98, 1.14],
   [1.11, 1.0, 0.85],
   [0.94, 1.07, 0.93],
@@ -145,7 +145,13 @@ export function rebuildLevelTextures(): void {
   const color = makeArray((k) => surfaceMaps(k).map, [200, 200, 200], true)
   const normal = makeArray((k) => surfaceMaps(k).normalMap, [128, 128, 255], false)
   ownedTextures = [color, normal]
-  // Each layer's average, in linear light as the shader sees it.
+  fillMeans(color)
+  uniforms.uMapArray.value = color
+  uniforms.uNormalArray.value = normal
+}
+
+/** Each layer's average, in linear light as the shader sees it. */
+function fillMeans(color: THREE.DataArrayTexture): void {
   const data = color.image.data as Uint8Array
   const per = color.image.width * color.image.height
   const lin = (b: number): number => {
@@ -163,8 +169,52 @@ export function rebuildLevelTextures(): void {
     }
     uniforms.uMean.value[l]!.setRGB(r / n, g / n, b / n)
   }
+}
+
+/** What the shader below works with, for a ray traced hit to come out the same colour. Live references, not copies. */
+export interface LevelShadingData {
+  layers: number
+  colorArray: THREE.Texture
+  normalArray: THREE.Texture
+  mean: THREE.Color[]
+  offset: THREE.Vector2[]
+  emissive: THREE.Color[]
+  tints: readonly [number, number, number][]
+  tintAmount: number[]
+  texContrast: number
+  shadeRange: number
+}
+
+export function levelShadingData(): LevelShadingData {
+  getLevelMaterial()
+  return {
+    layers: LAYERS,
+    colorArray: uniforms.uMapArray.value!,
+    normalArray: uniforms.uNormalArray.value!,
+    mean: uniforms.uMean.value,
+    offset: uniforms.uOffset.value,
+    emissive: uniforms.uEmissive.value,
+    tints: TINTS,
+    tintAmount: SURFACE_KEYS.map((k) => TINT_AMOUNT[k] ?? 0),
+    texContrast: TEX_CONTRAST,
+    shadeRange: SHADE_RANGE,
+  }
+}
+
+export function overrideLevelArrays(color: THREE.Texture, normal: THREE.Texture): void {
+  getLevelMaterial()
   uniforms.uMapArray.value = color
   uniforms.uNormalArray.value = normal
+  if ((color as THREE.DataArrayTexture).isDataArrayTexture && (color.image as { data?: unknown }).data instanceof Uint8Array) fillMeans(color as THREE.DataArrayTexture)
+}
+
+let hookKey = ''
+let hookPatch: ((shader: unknown) => void) | null = null
+
+export function setLevelMaterialHook(key: string, patch: ((shader: unknown) => void) | null): void {
+  hookKey = key
+  hookPatch = patch
+  if (material) material.needsUpdate = true
 }
 
 function patch(shader: { uniforms: Record<string, THREE.IUniform>; vertexShader: string; fragmentShader: string }): void {
@@ -279,6 +329,7 @@ if ( isLava ) normal = lvBump( - vViewPosition, normalize( vNormal ), lvH, 0.14 
     .replace('#include <lights_phong_fragment>', phong)
     .replace('#include <lights_phong_pars_fragment>', phongPars)
     .replace('#include <lights_fragment_begin>', lights)
+  if (hookPatch) hookPatch(shader)
 }
 
 /** The one material every baked static cell is drawn with. */
@@ -292,7 +343,7 @@ export function getLevelMaterial(): THREE.MeshPhongMaterial {
   material = new THREE.MeshPhongMaterial({ color: 0xffffff, map: stand, normalMap: stand })
   material.normalScale.set(0.85, 0.85)
   material.onBeforeCompile = patch
-  material.customProgramCacheKey = () => 'level-surfaces-v8'
+  material.customProgramCacheKey = () => 'level-surfaces-v8' + hookKey
   return material
 }
 

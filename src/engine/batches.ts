@@ -22,6 +22,12 @@ import { surfaceOf } from '../render/materials'
 import { getLevelMaterial, surfaceLayer } from '../render/levelmaterial'
 import { toneOf } from './bake'
 
+/** Told of every run of a slot drawn or collapsed. Nothing listens unless Nikolai Graphics is on (render/rt). */
+let rangeListener: ((slot: BatchSlot, start: number, count: number, visible: boolean) => void) | null = null
+export function setBatchRangeListener(fn: ((slot: BatchSlot, start: number, count: number, visible: boolean) => void) | null): void {
+  rangeListener = fn
+}
+
 /**
  * Is a placer shown: it and what it hangs from (a rack's guns hang from its models' group, hidden while the room cannot
  * be seen, and from the rack, hidden when it is shattered).
@@ -158,6 +164,7 @@ class MaterialBatch {
     else arr.fill(arr[a] ?? 0, a, a + count)
     index.addUpdateRange(a, count)
     index.needsUpdate = true
+    if (rangeListener) rangeListener(slot, start, count, visible)
   }
 }
 
@@ -253,6 +260,11 @@ export class StaticBatches {
       slots += b.slots.length
     }
     return { batches, slots }
+  }
+
+  /** The props drawn in the level's material, whole, as handed in: what the ray traced BVH takes them from. */
+  levelSlots(level: THREE.Material): readonly BatchSlot[] {
+    return this.batches.get(level)?.slots ?? []
   }
 
   clear(): void {

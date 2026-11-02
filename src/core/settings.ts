@@ -20,6 +20,8 @@ export interface Settings {
   fsrMode: number
   /** With AMD FSR 1 on, what it upscales to: a multiple of the screen's own pixels (1 is native, up to 2). */
   fsrTarget: number
+  /** Graphics preset: 0 standard, 1 Nikolai Graphics (render/rt/mode.ts). Read once at boot; a change reloads the page. */
+  rtMode: number
 }
 
 /** Settings that are a smooth range. */
@@ -38,6 +40,7 @@ export const SETTING_CHOICES = {
   fsrMode: [0, 1, 2, 3, 4],
   frameGenMult: [2, 3, 4, 5, 6],
   aa: [4, 2, 0],
+  rtMode: [0, 1],
 } as const
 
 export type RangeKey = keyof typeof SETTING_RANGE
@@ -45,7 +48,7 @@ export type ChoiceKey = keyof typeof SETTING_CHOICES
 
 export const isChoice = (k: keyof Settings): k is ChoiceKey => k in SETTING_CHOICES
 
-const DEFAULTS: Settings = { sens: 1, fov: 90, volume: 1, resolution: 1, frameGen: 0, aa: 4, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2 }
+const DEFAULTS: Settings = { sens: 1, fov: 90, volume: 1, resolution: 1, frameGen: 0, aa: 4, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, rtMode: 0 }
 const KEY = 'sanguine.settings'
 /**
  * Which defaults stored settings were saved under. Saving writes every setting, so a player who had only ever

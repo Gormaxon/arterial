@@ -20,8 +20,6 @@ export interface Settings {
   fsrMode: number
   /** With AMD FSR 1 on, what it upscales to: a multiple of the screen's own pixels (1 is native, up to 2). */
   fsrTarget: number
-  /** Graphics preset: 0 standard, 1 Nikolai Graphics (render/rt/mode.ts). Read once at boot; a change reloads the page. */
-  rtMode: number
 }
 
 /** Settings that are a smooth range. */
@@ -40,7 +38,6 @@ export const SETTING_CHOICES = {
   fsrMode: [0, 1, 2, 3, 4],
   frameGenMult: [2, 3, 4, 5, 6],
   aa: [4, 2, 0],
-  rtMode: [0, 1],
 } as const
 
 export type RangeKey = keyof typeof SETTING_RANGE
@@ -48,13 +45,12 @@ export type ChoiceKey = keyof typeof SETTING_CHOICES
 
 export const isChoice = (k: keyof Settings): k is ChoiceKey => k in SETTING_CHOICES
 
-const DEFAULTS: Settings = { sens: 1, fov: 90, volume: 1, resolution: 1, frameGen: 0, aa: 4, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, rtMode: 1 }
+const DEFAULTS: Settings = { sens: 1, fov: 90, volume: 1, resolution: 1, frameGen: 0, aa: 4, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2 }
 const KEY = 'sanguine.settings'
 /**
  * Which defaults stored settings were saved under. Saving writes every setting, so a player who had only ever
  * touched the volume has Auto stored for the resolution; from version 2 the default is 100%, and a resolution
- * saved under the old default is dropped so they get it. From version 3 the graphics preset defaults to Nikolai Graphics,
- * and a preset saved before then (the old default, Standard, written with everything else) is dropped the same way.
+ * saved under the old default is dropped so they get it. (Version 3 carried a graphics preset, since removed.)
  */
 const VERSION = 3
 
@@ -77,7 +73,6 @@ function load(): Settings {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings> & { v?: number }
     const v = typeof raw.v === 'number' ? raw.v : 0
     if (v < 2) delete raw.resolution
-    if (v < 3) delete raw.rtMode
     for (const k of Object.keys(DEFAULTS) as (keyof Settings)[]) {
       if (typeof raw[k] === 'number') savedSettings.add(k)
       out[k] = clampSetting(raw[k], k)

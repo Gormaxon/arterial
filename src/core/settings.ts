@@ -22,10 +22,6 @@ export interface Settings {
   fsrMode: number
   /** With AMD FSR 1 on, what it upscales to: a multiple of the screen's own pixels (1 is native, up to 2). */
   fsrTarget: number
-  /** How much of the lit look the level's surfaces get: 0 low, 1 medium, 2 high (the renderer says what each leaves out). */
-  shading: number
-  /** 1 lets bright things glow into what is round them. */
-  bloom: number
   /** How much is thrown about by shots, hits and blasts: 0 low to 3 ultra (particles, decals, blood, cases). */
   effects: number
 }
@@ -47,8 +43,6 @@ export const SETTING_CHOICES = {
   fsrMode: [0, 1, 2, 3, 4],
   frameGenMult: [2, 3, 4, 5, 6],
   aa: [4, 2, 0],
-  shading: [0, 1, 2],
-  bloom: [0, 1],
   effects: [0, 1, 2, 3],
 } as const
 
@@ -59,18 +53,19 @@ export const isChoice = (k: keyof Settings): k is ChoiceKey => k in SETTING_CHOI
 
 const DEFAULTS: Settings = {
   sens: 1, fov: 90, volume: 1,
-  preset: 3, resolution: 1, frameGen: 0, aa: 2, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, shading: 2, bloom: 1, effects: 2,
+  preset: 3, resolution: 1, frameGen: 0, aa: 2, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, effects: 2,
 }
 /** The settings a graphics preset is made of: choosing a preset writes them all, changing one by hand makes it custom. */
-export const GRAPHICS_KEYS = ['resolution', 'aa', 'fsr', 'fsrMode', 'fsrTarget', 'frameGen', 'frameGenMult', 'shading', 'bloom', 'effects'] as const satisfies readonly (keyof Settings)[]
+export const GRAPHICS_KEYS = ['resolution', 'aa', 'fsr', 'fsrMode', 'fsrTarget', 'frameGen', 'frameGenMult', 'effects'] as const satisfies readonly (keyof Settings)[]
 const KEY = 'sanguine.settings'
 /**
  * Which defaults stored settings were saved under. Saving writes every setting, so a player who had only ever
  * touched the volume has Auto stored for the resolution; from version 2 the default is 100%, and a resolution
  * saved under the old default is dropped so they get it. (Version 3 carried a graphics preset, since removed.) From
- * version 4 graphics are presets that apply to every look: the graphics saved before are dropped, for a preset.
+ * version 4 graphics are presets that apply to every look: the graphics saved before are dropped, for a preset. From
+ * version 5 every preset draws at 100% and nothing changes the look's shading: dropped again, for the new presets.
  */
-const VERSION = 4
+const VERSION = 5
 
 export function clampSetting(v: unknown, k: keyof Settings): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : DEFAULTS[k]
@@ -91,7 +86,7 @@ function load(): Settings {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings> & { v?: number }
     const v = typeof raw.v === 'number' ? raw.v : 0
     if (v < 2) delete raw.resolution
-    if (v < 4) for (const k of GRAPHICS_KEYS) delete raw[k]
+    if (v < 5) for (const k of [...GRAPHICS_KEYS, 'preset'] as const) delete raw[k]
     for (const k of Object.keys(DEFAULTS) as (keyof Settings)[]) {
       if (typeof raw[k] === 'number') savedSettings.add(k)
       out[k] = clampSetting(raw[k], k)

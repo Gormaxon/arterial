@@ -468,8 +468,18 @@ export class Upscaler {
     this.renderer.clear()
   }
 
-  /** Copy the frame out of the draw buffer into `target`: the one resolve a frame costs. */
+  /**
+   * The finished frame for the present pass (and anything after the scene) to read: `target` once resolved into, or with
+   * no anti-aliasing `draw` itself — the frame is already in a plain texture there, and copying it whole was a full
+   * screen's writes and reads a frame for nothing (about a millisecond on a Chromebook).
+   */
+  get frame(): THREE.WebGLRenderTarget {
+    return this.samples >= 2 ? this.target : this.draw
+  }
+
+  /** Copy the frame out of the multisampled draw buffer into `target`: the one resolve a frame costs. None without anti-aliasing (frame). */
   private resolve(): void {
+    if (this.samples < 2) return
     const gl = this.renderer.getContext() as WebGL2RenderingContext
     const state = this.renderer.state
     const from = this.framebufferOf(this.draw)
@@ -539,15 +549,17 @@ export class Upscaler {
       // EASU: the frame, upscaled to the canvas's own pixels.
       const out = this.renderer.getDrawingBufferSize(this.outSize)
       if (this.easu.width !== out.x || this.easu.height !== out.y) this.easu.setSize(out.x, out.y)
-      const con = easuCon0(this.target.width, this.target.height, out.x, out.y)
+      const con = easuCon0(this.frame.width, this.frame.height, out.x, out.y)
+      this.easuMaterial.uniforms.tInput!.value = this.frame.texture
       ;(this.easuMaterial.uniforms.con0!.value as THREE.Vector4).set(...con)
       this.renderer.setRenderTarget(this.easu)
       this.renderer.render(this.easuScene, this.camera)
       u.tFrame!.value = this.easu.texture
       u.texel!.value.set(1 / out.x, 1 / out.y)
     } else {
-      u.tFrame!.value = this.target.texture
-      u.texel!.value.set(1 / this.target.width, 1 / this.target.height)
+      const f = this.frame
+      u.tFrame!.value = f.texture
+      u.texel!.value.set(1 / f.width, 1 / f.height)
     }
     this.renderer.setRenderTarget(null)
     this.renderer.render(this.scene, this.camera)

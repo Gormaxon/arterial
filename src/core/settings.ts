@@ -48,14 +48,15 @@ export type ChoiceKey = keyof typeof SETTING_CHOICES
 
 export const isChoice = (k: keyof Settings): k is ChoiceKey => k in SETTING_CHOICES
 
-const DEFAULTS: Settings = { sens: 1, fov: 90, volume: 1, resolution: 1, frameGen: 0, aa: 4, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, rtMode: 0 }
+const DEFAULTS: Settings = { sens: 1, fov: 90, volume: 1, resolution: 1, frameGen: 0, aa: 4, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, rtMode: 1 }
 const KEY = 'sanguine.settings'
 /**
  * Which defaults stored settings were saved under. Saving writes every setting, so a player who had only ever
  * touched the volume has Auto stored for the resolution; from version 2 the default is 100%, and a resolution
- * saved under the old default is dropped so they get it.
+ * saved under the old default is dropped so they get it. From version 3 the graphics preset defaults to Nikolai Graphics,
+ * and a preset saved before then (the old default, Standard, written with everything else) is dropped the same way.
  */
-const VERSION = 2
+const VERSION = 3
 
 export function clampSetting(v: unknown, k: keyof Settings): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : DEFAULTS[k]
@@ -74,7 +75,9 @@ function load(): Settings {
   const out = { ...DEFAULTS }
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings> & { v?: number }
-    if (raw.v !== VERSION) delete raw.resolution
+    const v = typeof raw.v === 'number' ? raw.v : 0
+    if (v < 2) delete raw.resolution
+    if (v < 3) delete raw.rtMode
     for (const k of Object.keys(DEFAULTS) as (keyof Settings)[]) {
       if (typeof raw[k] === 'number') savedSettings.add(k)
       out[k] = clampSetting(raw[k], k)

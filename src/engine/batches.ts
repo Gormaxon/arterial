@@ -205,6 +205,15 @@ export class StaticBatches {
     if (i < 0) return
     b.slots.splice(i, 1)
     slot.geometry.dispose()
+    // In play, a prop that goes (a crate blown apart) is collapsed where it is in its batch — its run of indices to
+    // nothing, as a knocked-out piece is — and the batch is not merged again: that merge, and everything made from the
+    // merged mesh after it (the level's props are one batch of a few hundred thousand vertices), was a third of a
+    // second's freeze on the Chromebook for every crate destroyed (2026-11-04, the user: slams give lag spikes). Its
+    // triangles stay in the buffers, drawn as nothing, until the batch is next built (the editor, the level again).
+    if (!this.building && b.mesh && !b.dirty && slot.start >= 0) {
+      b.setRange(slot, 0, slot.count, false)
+      return
+    }
     b.dirty = true
   }
 
@@ -237,6 +246,8 @@ export class StaticBatches {
 
   /** Frames since the props' matrices were last checked for a move. */
   private sinceChecked = 0
+  /** The world is being built (the editor): a prop removed is merged out at once, not collapsed in place. */
+  private building = false
 
   /**
    * One frame: rebuild what changed, and show or hide what has been hidden or shown. Whether a prop has been MOVED is
@@ -245,6 +256,7 @@ export class StaticBatches {
    * it is made twice a second.
    */
   tick(watchMoves: boolean): void {
+    this.building = watchMoves
     this.sinceChecked++
     const check = watchMoves || this.sinceChecked >= 30
     if (check) this.sinceChecked = 0

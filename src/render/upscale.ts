@@ -50,6 +50,7 @@ uniform float uConcuss;
 uniform float uShock;
 uniform vec2 uShockAt;
 uniform float uSlow;
+uniform float uGore;
 // The crosshair and the visor's compass tape, drawn here rather than as page elements over the canvas (Upscaler.hud).
 uniform vec2 uRes;
 uniform float uCss;
@@ -179,6 +180,12 @@ void main() {
   // The optics coming online: a flash of brightness with the static.
   outc += uPulse * 0.09 * uStrength;
 
+  // A kill (Upscaler.gore): the edges of the view flushed blood red for a moment, the middle left clear to aim by.
+  if (uGore > 0.0) {
+    float ring = smoothstep(0.03, 0.36, r2) * uGore;
+    outc = mix(outc, outc * vec3(1.35, 0.42, 0.38) + vec3(0.11, 0.0, 0.0), ring);
+  }
+
   // --- the HUD's moving parts (Upscaler.hud), in CSS pixels from the top left ---------------------------------
   vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y) / uCss;
   float aa = 0.75 / uCss;
@@ -264,6 +271,7 @@ export class Upscaler {
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
   private readonly material: THREE.ShaderMaterial
   private pulseAmount = 0
+  private goreAmount = 0
   /** How concussed the view is, 0..1, settling back on its own (see `concuss`). */
   private concussion = 0
   /** Seconds since the last blast's shock front set out across the view, and where on screen it set out from. */
@@ -301,6 +309,7 @@ export class Upscaler {
         sharpness: { value: 0.5 },
         uTime: { value: 0 },
         uPulse: { value: 0 },
+        uGore: { value: 0 },
         uConcuss: { value: 0 },
         uShock: { value: 1 },
         uShockAt: { value: new THREE.Vector2(0.5, 0.5) },
@@ -434,6 +443,11 @@ export class Upscaler {
   }
 
   /** A burst of static and a flash, for the optics coming online. It decays on its own. */
+  /** A kill's flush of red at the edges, 0..1: the strongest wins, gone in about a third of a second. */
+  gore(amount: number): void {
+    this.goreAmount = Math.min(1, Math.max(this.goreAmount, amount))
+  }
+
   pulse(amount = 1): void {
     this.pulseAmount = Math.max(this.pulseAmount, amount)
   }
@@ -524,6 +538,8 @@ export class Upscaler {
     u.sharpness!.value = Math.max(0, Math.min(1, (upscale - 1) * 1.6 + 0.2))
     this.pulseAmount = Math.max(0, this.pulseAmount - dt * 1.7)
     u.uPulse!.value = this.pulseAmount
+    this.goreAmount = Math.max(0, this.goreAmount - dt * 3)
+    u.uGore!.value = this.goreAmount * this.goreAmount
     // Settles over about four seconds from the worst; the shock front is gone in under one.
     this.concussion = Math.max(0, this.concussion - dt * 0.24)
     this.shockT += dt

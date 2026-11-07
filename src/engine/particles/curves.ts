@@ -64,6 +64,13 @@ function heightAt(y0: number, vy0: number, g: number, k: number, t: number): num
 }
 
 /**
+ * Halvings of the floor search with drag (floorHitTime), to within life / 16384 of the moment, before the one Newton
+ * step that makes it exact. It was 22 halvings: eight more exp() a spark, on every spark of every burst — a kill's gore
+ * is two hundred of them.
+ */
+const FLOOR_STEPS = 14
+
+/**
  * The age at which a particle first comes down through `floor`, or -1 if it does not
  * within `life`. Height under gravity and drag rises (at most once) and then only
  * falls, so after the apex a bisection is exact to well under a frame.
@@ -79,6 +86,28 @@ export function floorHitTime(y0: number, vy0: number, g: number, k: number, floo
     lo = Math.min(lo, life)
   }
   let hi = life
+  if (k > K_EPS) {
+    // heightAt(t) - floor with what does not change taken out of the loop: c + a·(1 - e^-kt)/k - (g/k)·t.
+    const ik = 1 / k
+    const gk = g * ik
+    const a = vy0 + gk
+    const c = y0 - floor
+    for (let i = 0; i < FLOOR_STEPS; i++) {
+      const mid = (lo + hi) * 0.5
+      if (c + a * (1 - Math.exp(-k * mid)) * ik - gk * mid > 0) lo = mid
+      else hi = mid
+    }
+    // Then one Newton step from the end that is at or under the floor (falling there: the height's rate a·e^-kt - g/k
+    // is below zero), kept inside what the halving found: exact to far under a micrometre.
+    const e = Math.exp(-k * hi)
+    const rate = a * e - gk
+    if (rate < 0) {
+      const t = hi - (c + a * (1 - e) * ik - gk * hi) / rate
+      if (t >= lo && t <= hi) return t
+    }
+    return hi
+  }
+  // (Without drag: rare; the plain halving.)
   for (let i = 0; i < 22; i++) {
     const mid = (lo + hi) * 0.5
     if (heightAt(y0, vy0, g, k, mid) > floor) lo = mid

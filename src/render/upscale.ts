@@ -51,6 +51,11 @@ uniform float uShock;
 uniform vec2 uShockAt;
 uniform float uSlow;
 uniform float uGore;
+// An overlay on the glass, drawn over everything here (Upscaler.overlay): what a game lays over the view — in SANGUINE the
+// slam's (ui/slamfx.ts). A: the edges darkened, the streaks' strength, the two streak layers' phase. B: a ring's scale and
+// strength, a flash's strength.
+uniform vec4 uOverA;
+uniform vec4 uOverB;
 // The crosshair and the visor's compass tape, drawn here rather than as page elements over the canvas (Upscaler.hud).
 uniform vec2 uRes;
 uniform float uCss;
@@ -223,6 +228,58 @@ void main() {
     outc = mix(outc, vec3(1.0), (1.0 - smoothstep(-aa, aa, hit)) * uCh.z * uCh.y);
   }
 
+  // --- the overlay (Upscaler.overlay): over everything above, as a page layer over the canvas was ------------------
+  // In CSS pixels from the top left, with the gradients the page drew it with (their stops, sizes and timings), blended in
+  // the screen's own values as the page composited them. Drawn here, none of it is a page layer built, painted and torn
+  // down each time (megapixels painted again on the Chromebook's graphics process, on every slam).
+  if (uOverA.x + uOverA.y + uOverB.y + uOverB.z > 0.0) {
+    vec2 vp = uRes / uCss;
+    vec2 q = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y) / uCss;
+    // The edges: an ellipse at 50% 55% out to the farthest corner, clear to 46%, rgba(4,10,14,.7) at 100%.
+    if (uOverA.x > 0.0) {
+      vec2 c = vp * vec2(0.5, 0.55);
+      float t = length((q - c) / (c * 1.41421356));
+      outc = mix(outc, vec3(4.0, 10.0, 14.0) / 255.0, 0.7 * clamp((t - 0.46) / 0.54, 0.0, 1.0) * uOverA.x);
+    }
+    // The streaks: two layers of thin bright lines (every 99 px: 3 px at 41, 2 px at 97), cut into 70 px dashes every
+    // 190 px that rush up the view, the second 23 px over and at 70%; seen only towards the edges (a mask clear to 34%,
+    // full from 70%, of the ellipse at the middle out to the farthest corner).
+    if (uOverA.y > 0.0) {
+      vec2 c = vp * 0.5;
+      float m = clamp((length((q - c) / (c * 1.41421356)) - 0.34) / 0.36, 0.0, 1.0) * uOverA.y;
+      for (int k = 0; k < 2; k++) {
+        float x0 = k == 0 ? q.x : q.x - 23.0;
+        if (x0 < 0.0) continue;
+        float x = mod(x0, 99.0);
+        float a = x >= 41.0 && x < 44.0 ? 0.55 : (x >= 97.0 ? 0.38 : 0.0);
+        float y = mod(q.y + 190.0 * (k == 0 ? uOverA.z : uOverA.w), 190.0);
+        if (y >= 70.0) a = 0.0;
+        outc = mix(outc, vec3(230.0, 245.0, 255.0) / 255.0, a * m * (k == 0 ? 1.0 : 0.7));
+      }
+    }
+    // The ring: a circle 70vmax across on the bottom edge's middle, scaled from there, its colour a band of its radial
+    // gradient (clear to 54%, rgba(255,226,180,.5) at 63%, rgba(255,196,130,.18) at 68%, clear at 72% of the farthest
+    // corner, cut at the circle).
+    if (uOverB.y > 0.0) {
+      float r = 0.7 * max(vp.x, vp.y);
+      float d = length(q - vec2(vp.x * 0.5, vp.y)) / max(uOverB.x, 1e-3);
+      if (d <= r) {
+        float u = d / (r * 1.41421356);
+        vec4 c1 = vec4(vec3(255.0, 226.0, 180.0) / 255.0 * 0.5, 0.5);
+        vec4 c2 = vec4(vec3(255.0, 196.0, 130.0) / 255.0 * 0.18, 0.18);
+        vec4 c = u < 0.54 ? vec4(0.0) : u < 0.63 ? c1 * ((u - 0.54) / 0.09) : u < 0.68 ? mix(c1, c2, (u - 0.63) / 0.05) : c2 * clamp(1.0 - (u - 0.68) / 0.04, 0.0, 1.0);
+        c *= uOverB.y;
+        outc = outc * (1.0 - c.a) + c.rgb;
+      }
+    }
+    // The flash: an ellipse at 50% 100% out to the farthest corner, rgba(255,236,206,.75) going clear at 75%.
+    if (uOverB.z > 0.0) {
+      vec2 c = vec2(vp.x * 0.5, vp.y);
+      float t = length((q - c) / (vec2(vp.x * 0.5, vp.y) * 1.41421356));
+      outc = mix(outc, vec3(255.0, 236.0, 206.0) / 255.0, 0.75 * clamp(1.0 - t / 0.75, 0.0, 1.0) * uOverB.z);
+    }
+  }
+
   gl_FragColor = vec4(clamp(outc, 0.0, 1.0), 1.0);
 }`
 
@@ -310,6 +367,8 @@ export class Upscaler {
         uTime: { value: 0 },
         uPulse: { value: 0 },
         uGore: { value: 0 },
+        uOverA: { value: new THREE.Vector4() },
+        uOverB: { value: new THREE.Vector4() },
         uConcuss: { value: 0 },
         uShock: { value: 1 },
         uShockAt: { value: new THREE.Vector2(0.5, 0.5) },
@@ -443,6 +502,17 @@ export class Upscaler {
   }
 
   /** A burst of static and a flash, for the optics coming online. It decays on its own. */
+  /**
+   * The overlay on the glass this frame (see the shader's overlay): `a` the edges' darkening, the streaks' strength and
+   * the two streak layers' phase (0..1 of their 190 px); `b` the ring's scale and strength, and the flash's strength.
+   * All 0: nothing drawn. Set by whoever owns it, every frame it changes.
+   */
+  overlay(a: THREE.Vector4Like, b: THREE.Vector4Like): void {
+    const u = this.material.uniforms
+    ;(u.uOverA!.value as THREE.Vector4).copy(a)
+    ;(u.uOverB!.value as THREE.Vector4).copy(b)
+  }
+
   /** A kill's flush of red at the edges, 0..1: the strongest wins, gone in about a third of a second. */
   gore(amount: number): void {
     this.goreAmount = Math.min(1, Math.max(this.goreAmount, amount))

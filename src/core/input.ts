@@ -56,8 +56,13 @@ export class Input {
     addEventListener('pointermove', this.onPointerMove)
     addEventListener('mousedown', this.onMouseDown)
     addEventListener('mouseup', this.onMouseUp)
-    // Right mouse is the dash; without this the browser context menu eats it.
+    // Right mouse is a control too; without this the browser context menu eats it.
     target.addEventListener('contextmenu', (e) => e.preventDefault())
+    // While the pointer is held, a Ctrl+wheel zooms the page (and resizes the game under you): not while playing.
+    addEventListener('wheel', (e) => {
+      if (this.locked && e.ctrlKey) e.preventDefault()
+    }, { passive: false })
+    document.addEventListener('fullscreenchange', this.onFullscreenChange)
     // Dropping focus while keys are held otherwise leaves the player running forever.
     // visibilitychange covers the cases blur misses — switching desktops, locking
     // the screen — where a key is released while the page is not listening at all.
@@ -119,6 +124,18 @@ export class Input {
    * asked for before the menu opened) is let go at once instead of capturing the cursor over the menu.
    */
   lockAllowed: () => boolean = () => true
+
+  /**
+   * Hold the keyboard as well as the pointer: for a game whose keys, held with Ctrl, are the browser's own shortcuts —
+   * Ctrl+W closes the tab, and nothing a page does in a window stops it. With this on, the request that takes the
+   * pointer takes the page fullscreen too, and there the keyboard is locked (the Keyboard Lock API), so every key
+   * reaches the game. A tap of Esc still lets go of the pointer (the game's pause); holding Esc leaves fullscreen.
+   * Where the browser refuses either, play goes on in the window: then, while the pointer is held, every Ctrl+key the
+   * page may cancel is cancelled (onKeyDown), and the game can guard the rest (a 'Leave site?' prompt).
+   */
+  holdKeyboard = false
+  /** The keyboard is locked to the page now (holdKeyboard, in fullscreen). */
+  private keyboardHeld = false
 
   /**
    * The pointer is wanted held but is not yet: a request is with the browser, or it was refused and is to be asked for
@@ -192,6 +209,15 @@ export class Input {
       } catch {
         this.refused(id)
         return
+      }
+    }
+    // Fullscreen after the pointer (asking for fullscreen uses up the click that asked; the lock needs it first).
+    if (this.holdKeyboard && !document.fullscreenElement) {
+      try {
+        const full = document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }) as Promise<void> | undefined
+        full?.catch(() => undefined)
+      } catch {
+        // Not allowed here: play goes on in the window.
       }
     }
     if (asked instanceof Promise) {
@@ -355,6 +381,25 @@ export class Input {
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'F3'].includes(e.code)) {
       e.preventDefault()
     }
+    // While the pointer is held, Ctrl+anything is the game's (a held Ctrl is a control): not the browser's save, bookmark,
+    // reload or tab switch. (Ctrl+W, T and N it does not let a page cancel in a window: holdKeyboard's fullscreen does.)
+    if (this.locked && e.ctrlKey) e.preventDefault()
+    // With the keyboard locked the browser leaves Esc to the page: a tap lets go of the pointer, as it would have.
+    if (e.code === 'Escape' && this.locked && this.keyboardHeld && !e.repeat) document.exitPointerLock?.()
+  }
+
+  /** Fullscreen taken (holdKeyboard): the keyboard locked to the page; left (hold Esc), the browser lets it go. */
+  private onFullscreenChange = (): void => {
+    const kb = (navigator as unknown as { keyboard?: { lock?: (codes?: string[]) => Promise<void> } }).keyboard
+    if (!document.fullscreenElement) {
+      this.keyboardHeld = false
+      return
+    }
+    if (!this.holdKeyboard || !kb?.lock) return
+    kb.lock().then(
+      () => void (this.keyboardHeld = !!document.fullscreenElement),
+      () => void (this.keyboardHeld = false),
+    )
   }
 
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -368,7 +413,7 @@ export class Input {
    *
    * A modifier keyup is easy to miss — released while another window has focus, or
    * across a pointer-lock transition — and a stuck modifier is invisible and
-   * permanent: the player sprints forever, and the stuck key's edge never fires
+   * permanent: the player slides forever, and the stuck key's edge never fires
    * again because the auto-repeat guard sees it as already down. Every event carries
    * the true state, so reconciling costs nothing and closes the hole.
    */

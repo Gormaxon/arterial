@@ -57,7 +57,7 @@ compiled down) and on the GPU, and that buys it a lot:
 
 **physics/** — the collision system: a BVH over the baked level, moving bodies, ray casts, capsule tests.
 
-**core/** — a fixed-step loop (120 Hz simulation, interpolated rendering), input with pointer lock, persisted
+**core/** — a fixed-step loop (120 Hz simulation, interpolated rendering), input with pointer lock (and, with `holdKeyboard`, fullscreen with the keyboard locked, for games whose keys are Ctrl shortcuts), persisted
 settings.
 
 **render/** — procedural surface textures and materials (no image files needed), the level material, a procedural

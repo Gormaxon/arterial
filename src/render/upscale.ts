@@ -64,6 +64,10 @@ uniform float uVisorA;
 uniform sampler2D tTape;
 uniform vec4 uTape;
 uniform vec3 uTapeTex;
+#ifdef GLASS_GLITCH
+// The suit's camera disrupted (Upscaler.glitch): x a burst's strength, y its seed, z the rows it tears the picture into.
+uniform vec4 uGlitch;
+#endif
 varying vec2 vUv;
 
 float sdBox(vec2 p, vec2 c, vec2 b) {
@@ -83,6 +87,23 @@ void main() {
   // The shock front: a ring of bent light racing out across the view from where it went off. Then the concussion: the
   // view swimming, doubled and smeared, settling over seconds.
   vec2 uv = vUv;
+#ifdef GLASS_GLITCH
+  // --- the suit's camera disrupted (see Upscaler.glitch) ---------------------------------------
+  // Rows of the picture torn sideways, and blocks of it stuck, all dealt again from the seed many times a second.
+  // Compiled only into the glitch's variant of this pass (Upscaler.glitchMaterial), drawn only on a burst's frames.
+  float tear = 0.0;
+  if (uGlitch.x > 0.0) {
+    // The torn rows: some of the rows, each shifted its own way.
+    float row = floor(vUv.y * uGlitch.z);
+    tear = step(1.0 - 0.38 * uGlitch.x, hash(vec2(row, uGlitch.y)));
+    uv.x += tear * (hash(vec2(row + 17.0, uGlitch.y)) - 0.5) * 0.09 * uGlitch.x;
+    // The stuck blocks: in runs of four along a line, as a broken stream leaves them, each smeared down from the one line
+    // of pixels through its middle.
+    vec2 cells = vec2(uGlitch.z * uAspect, uGlitch.z) * 0.6;
+    vec2 cell = floor(vUv * cells);
+    if (hash(vec2(floor(cell.x * 0.25), cell.y) + uGlitch.y * 3.1) > 1.0 - 0.14 * uGlitch.x) uv.y = (cell.y + 0.5) / cells.y;
+  }
+#endif
   if (uConcuss > 0.0) {
     vec2 fromBlast = (vUv - uShockAt) * vec2(uAspect, 1.0);
     float rd = length(fromBlast);
@@ -131,6 +152,15 @@ void main() {
   float rr = texture2D(tFrame, uv + shift).r;
   float bb = texture2D(tFrame, uv - shift).b;
   outc = vec3(rr + detail.r, outc.g, bb + detail.b);
+#ifdef GLASS_GLITCH
+  if (tear > 0.0) {
+    // A torn row's colours pulled apart, red one way and blue the other, and the row a touch brighter.
+    vec2 apart = vec2(0.012 * uGlitch.x, 0.0);
+    outc.r += texture2D(tFrame, uv + apart).r - c.r;
+    outc.b += texture2D(tFrame, uv - apart).b - c.b;
+    outc *= 1.04;
+  }
+#endif
   if (uConcuss > 0.0) {
     // Seeing double, the second image drifting off and back; and smeared, as if the eyes will not focus.
     float k = uConcuss;
@@ -205,7 +235,8 @@ void main() {
     outc = mix(outc, tc.rgb, tc.a * fade * uVisorA);
   }
   // The crosshair: four thin ticks (their gap uCh.x: the spread) round a small dot, all one pale green, each with a
-  // crisp dark edge so it reads on a bright wall and a dark one alike. A hit (uCh.z) puts a small white X round them.
+  // crisp dark edge so it reads on a bright wall and a dark one alike. A hit (uCh.z) puts a small white X round them; a
+  // blow a shield took (uCh.w), the same X in azure.
   if (uCh.y > 0.0) {
     vec2 p = px - uRes * 0.5 / uCss;
     float gap = uCh.x;
@@ -218,14 +249,14 @@ void main() {
     vec2 r = abs(p);
     vec2 d = vec2(r.x + r.y, r.x - r.y) * 0.70710678;
     float xr0 = gap * 0.6 + 6.0;
-    float hit = uCh.z > 0.0 ? sdBox(d, vec2(xr0 + 3.0, 0.0), vec2(3.0, 0.75)) : 1e3;
+    float hit = uCh.z > 0.0 || uCh.w > 0.0 ? sdBox(d, vec2(xr0 + 3.0, 0.0), vec2(3.0, 0.75)) : 1e3;
     float shape = min(min(ticks, dot), hit);
     // The edge: a dark line a pixel wide round every piece, falling off quickly (no haze).
     float edge = 1.0 - smoothstep(0.0, 1.25, shape);
     outc = mix(outc, vec3(0.0), edge * 0.7 * uCh.y);
     vec3 col = vec3(0.86, 1.0, 0.9);
     outc = mix(outc, col, (1.0 - smoothstep(-aa, aa, min(ticks, dot))) * uCh.y);
-    outc = mix(outc, vec3(1.0), (1.0 - smoothstep(-aa, aa, hit)) * uCh.z * uCh.y);
+    outc = mix(outc, uCh.z > 0.0 ? vec3(1.0) : vec3(0.42, 0.78, 1.0), (1.0 - smoothstep(-aa, aa, hit)) * max(uCh.z, uCh.w) * uCh.y);
   }
 
   // --- the overlay (Upscaler.overlay): over everything above, as a page layer over the canvas was ------------------
@@ -343,6 +374,16 @@ export class Upscaler {
   /** The pass's text the glass was built from ('' when it must be built again). */
   private glassFrom = ''
   private glassWarm = false
+  /**
+   * The same pass with the glitch compiled in as well (GLASS_GLITCH, and SLAM_GLASS with it), every uniform shared: drawn
+   * instead only on the frames a burst of it shows (`glitch`). Built from the pass as it stands, as the glass is (see
+   * glassMaterial), so the look's patches are in it, and drawn once whenever it is built, so its first real draw is never
+   * in play.
+   */
+  private glitchMaterial: THREE.ShaderMaterial | null = null
+  /** The pass's text the glitch's variant was built from ('' when it must be built again). */
+  private glitchFrom = ''
+  private glitchWarm = false
   private readonly presentQuad: THREE.Mesh
   private pulseAmount = 0
   private goreAmount = 0
@@ -400,6 +441,7 @@ export class Upscaler {
         tTape: { value: null },
         uTape: { value: new THREE.Vector4() },
         uTapeTex: { value: new THREE.Vector3(1, 1, 0) },
+        uGlitch: { value: new THREE.Vector4() },
       },
       depthTest: false,
       depthWrite: false,
@@ -428,8 +470,10 @@ export class Upscaler {
     if (on) m.defines = { ...m.defines, FSR_RCAS: 1 }
     else delete (m.defines as Record<string, unknown>).FSR_RCAS
     m.needsUpdate = true
-    // The glass's variant is built again with them (glass()): drawn once at the next frame, not first on a slam.
+    // The glass's variant is built again with them (glass()): drawn once at the next frame, not first on a slam. So is
+    // the glitch's.
     this.glassFrom = ''
+    this.glitchFrom = ''
   }
 
   /** The glass's variant of the pass as it stands now (see glassMaterial). */
@@ -449,6 +493,25 @@ export class Upscaler {
       this.glassWarm = false
     }
     return this.glassMaterial
+  }
+
+  /** The glitch's variant of the pass as it stands now (see glitchMaterial): the glass's, with the glitch as well. */
+  private glitchy(): THREE.ShaderMaterial {
+    const m = this.material
+    if (!this.glitchMaterial || this.glitchFrom !== m.fragmentShader) {
+      this.glitchMaterial?.dispose()
+      this.glitchMaterial = new THREE.ShaderMaterial({
+        vertexShader: m.vertexShader,
+        fragmentShader: m.fragmentShader,
+        uniforms: m.uniforms,
+        defines: { ...m.defines, SLAM_GLASS: 1, GLASS_GLITCH: 1 },
+        depthTest: false,
+        depthWrite: false,
+      })
+      this.glitchFrom = m.fragmentShader
+      this.glitchWarm = false
+    }
+    return this.glitchMaterial
   }
 
   /** Anti-aliasing samples in use now: 0 for none. Frame generation draws its real frames with the same. */
@@ -563,6 +626,17 @@ export class Upscaler {
   }
 
   /**
+   * The suit's camera disrupted (player/disruption.ts): a burst of artifacting this frame, `strength` 0..1 — rows of the
+   * picture torn sideways (up to 38% of them, by up to 4.5% of the width) with their colours split, and up to 14% of it in
+   * blocks stuck, each smeared down from a line of its pixels — dealt from `seed` into `bands` rows. 0: none, and the plain
+   * pass is drawn. Set by whoever owns it, every frame it changes. Not scaled by the camera look's strength, as a kill's
+   * flush and a blast's are not.
+   */
+  glitch(strength: number, seed = 0, bands = 24): void {
+    ;(this.material.uniforms.uGlitch!.value as THREE.Vector4).set(Math.max(0, Math.min(1, strength)), seed, bands, 0)
+  }
+
+  /**
    * A blast close by: the shock front racing out across the view from where it went off (`at`, 0..1 across and up the
    * screen; the middle if it was behind you), then the view swimming — doubled, smeared, drained of colour, closed in —
    * and settling over a few seconds. `amount` 0..1: the nearer the blast, the harder and longer.
@@ -615,11 +689,12 @@ export class Upscaler {
    * since the last frame, for the static's decay.
    */
   /**
-   * The HUD's moving parts, drawn by the present pass: the crosshair (its gap in CSS px, its opacity, white for a hit)
-   * and the visor's compass tape (shown or not, and how far along its strip the heading is, CSS px). On a page they
-   * were the elements changing every frame over the canvas, and every change cost the page a restyle and a repaint.
+   * The HUD's moving parts, drawn by the present pass: the crosshair (its gap in CSS px, its opacity, white for a hit,
+   * azure for a blow a shield took) and the visor's compass tape (shown or not, and how far along its strip the
+   * heading is, CSS px). On a page they were the elements changing every frame over the canvas, and every change cost
+   * the page a restyle and a repaint.
    */
-  readonly hud = { gap: 5, crosshair: 0, hit: 0, visor: 0, tapeX: 0 }
+  readonly hud = { gap: 5, crosshair: 0, hit: 0, blocked: 0, visor: 0, tapeX: 0 }
   private tapeTexture: THREE.CanvasTexture | null = null
 
   /** The compass tape's strip (drawn once, Visor.tapeCanvas), where the tape stands on the page (CSS px). */
@@ -642,7 +717,7 @@ export class Upscaler {
     ;(u.uRes!.value as THREE.Vector2).copy(out)
     // Canvas pixels per CSS pixel (read from the page it would make the page lay itself out).
     u.uCss!.value = this.renderer.getPixelRatio()
-    ;(u.uCh!.value as THREE.Vector4).set(this.hud.gap, this.hud.crosshair, this.hud.hit, 0)
+    ;(u.uCh!.value as THREE.Vector4).set(this.hud.gap, this.hud.crosshair, this.hud.hit, this.hud.blocked)
     u.uVisorA!.value = this.tapeTexture ? this.hud.visor : 0
     ;(u.uTapeTex!.value as THREE.Vector3).z = this.hud.tapeX
     u.sharpness!.value = Math.max(0, Math.min(1, (upscale - 1) * 1.6 + 0.2))
@@ -677,15 +752,23 @@ export class Upscaler {
     }
     this.renderer.setRenderTarget(null)
     const glass = this.glass()
+    const glitchy = this.glitchy()
     if (!this.glassWarm) {
       // The glass's variant, drawn once (with nothing on the glass it draws what the plain one does, which draws over it).
       this.presentQuad.material = glass
       this.renderer.render(this.scene, this.camera)
       this.glassWarm = true
     }
+    if (!this.glitchWarm) {
+      // The glitch's, the same way (drawn over by the real draw below, whatever it showed).
+      this.presentQuad.material = glitchy
+      this.renderer.render(this.scene, this.camera)
+      this.glitchWarm = true
+    }
     const a = u.uOverA!.value as THREE.Vector4
     const b = u.uOverB!.value as THREE.Vector4
-    this.presentQuad.material = a.x + a.y + b.y + b.z > 0 ? glass : this.material
+    const g = u.uGlitch!.value as THREE.Vector4
+    this.presentQuad.material = g.x > 0 ? glitchy : a.x + a.y + b.y + b.z > 0 ? glass : this.material
     this.renderer.render(this.scene, this.camera)
   }
 
@@ -700,6 +783,7 @@ export class Upscaler {
     this.easu.dispose()
     this.material.dispose()
     this.glassMaterial?.dispose()
+    this.glitchMaterial?.dispose()
     this.easuMaterial.dispose()
   }
 }

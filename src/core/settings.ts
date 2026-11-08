@@ -24,6 +24,8 @@ export interface Settings {
   fsrTarget: number
   /** How much is thrown about by shots, hits and blasts: 0 low to 3 ultra (particles, decals, blood, cases). */
   effects: number
+  /** The HUD's size: a multiple of its own (1). */
+  hud: number
 }
 
 /** Settings that are a smooth range. */
@@ -32,6 +34,7 @@ export const SETTING_RANGE = {
   fov: { min: 70, max: 110, step: 1 },
   volume: { min: 0, max: 1, step: 0.05 },
   fsrTarget: { min: 1, max: 2, step: 0.05 },
+  hud: { min: 0.7, max: 1.4, step: 0.05 },
 } as const
 
 /** Settings that pick from a short list; a stored value is snapped to the nearest. */
@@ -52,7 +55,7 @@ export type ChoiceKey = keyof typeof SETTING_CHOICES
 export const isChoice = (k: keyof Settings): k is ChoiceKey => k in SETTING_CHOICES
 
 const DEFAULTS: Settings = {
-  sens: 1, fov: 90, volume: 1,
+  sens: 1, fov: 90, volume: 1, hud: 1,
   preset: 3, resolution: 1, frameGen: 0, aa: 2, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, effects: 2,
 }
 /** The settings a graphics preset is made of: choosing a preset writes them all, changing one by hand makes it custom. */

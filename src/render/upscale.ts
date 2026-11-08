@@ -333,10 +333,15 @@ export class Upscaler {
   private readonly material: THREE.ShaderMaterial
   /**
    * The same pass with the glass's overlay compiled in (SLAM_GLASS), every uniform shared: drawn instead only on the frames
-   * the overlay shows (overlay). Drawn once at the first frame (under the loading screen) and again after an FSR change
-   * (`glassWarm`), so its first real draw — on the Chromebook a pipeline made, 100-200 ms — is never in play.
+   * the overlay shows (overlay). Built from the pass as it stands (`glass()`), not as written: a look patches the pass's
+   * text after it is made (the baked tier adds its glow and its cuts), and a variant built from the text as written lost
+   * them — the glow went out on every frame of a slam. Rebuilt when the pass's text or defines change, and drawn once
+   * then (`glassWarm`, under the loading screen at the first frame), so its first real draw — on the Chromebook a pipeline
+   * made, 100-200 ms — is never in play.
    */
-  private readonly glassMaterial: THREE.ShaderMaterial
+  private glassMaterial: THREE.ShaderMaterial | null = null
+  /** The pass's text the glass was built from ('' when it must be built again). */
+  private glassFrom = ''
   private glassWarm = false
   private readonly presentQuad: THREE.Mesh
   private pulseAmount = 0
@@ -399,14 +404,6 @@ export class Upscaler {
       depthTest: false,
       depthWrite: false,
     })
-    this.glassMaterial = new THREE.ShaderMaterial({
-      vertexShader: VERT,
-      fragmentShader: FRAG,
-      uniforms: this.material.uniforms,
-      defines: { SLAM_GLASS: 1 },
-      depthTest: false,
-      depthWrite: false,
-    })
     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material)
     quad.frustumCulled = false
     this.scene.add(quad)
@@ -427,13 +424,31 @@ export class Upscaler {
   setFsr(on: boolean): void {
     if (on === this.fsr) return
     this.fsr = on
-    for (const m of [this.material, this.glassMaterial]) {
-      if (on) m.defines = { ...m.defines, FSR_RCAS: 1 }
-      else delete (m.defines as Record<string, unknown>).FSR_RCAS
-      m.needsUpdate = true
+    const m = this.material
+    if (on) m.defines = { ...m.defines, FSR_RCAS: 1 }
+    else delete (m.defines as Record<string, unknown>).FSR_RCAS
+    m.needsUpdate = true
+    // The glass's variant is built again with them (glass()): drawn once at the next frame, not first on a slam.
+    this.glassFrom = ''
+  }
+
+  /** The glass's variant of the pass as it stands now (see glassMaterial). */
+  private glass(): THREE.ShaderMaterial {
+    const m = this.material
+    if (!this.glassMaterial || this.glassFrom !== m.fragmentShader) {
+      this.glassMaterial?.dispose()
+      this.glassMaterial = new THREE.ShaderMaterial({
+        vertexShader: m.vertexShader,
+        fragmentShader: m.fragmentShader,
+        uniforms: m.uniforms,
+        defines: { ...m.defines, SLAM_GLASS: 1 },
+        depthTest: false,
+        depthWrite: false,
+      })
+      this.glassFrom = m.fragmentShader
+      this.glassWarm = false
     }
-    // The glass's variant is a new one too: drawn once at the next frame, not first on a slam.
-    this.glassWarm = false
+    return this.glassMaterial
   }
 
   /** Anti-aliasing samples in use now: 0 for none. Frame generation draws its real frames with the same. */
@@ -661,15 +676,16 @@ export class Upscaler {
       u.texel!.value.set(1 / this.target.width, 1 / this.target.height)
     }
     this.renderer.setRenderTarget(null)
+    const glass = this.glass()
     if (!this.glassWarm) {
       // The glass's variant, drawn once (with nothing on the glass it draws what the plain one does, which draws over it).
-      this.presentQuad.material = this.glassMaterial
+      this.presentQuad.material = glass
       this.renderer.render(this.scene, this.camera)
       this.glassWarm = true
     }
     const a = u.uOverA!.value as THREE.Vector4
     const b = u.uOverB!.value as THREE.Vector4
-    this.presentQuad.material = a.x + a.y + b.y + b.z > 0 ? this.glassMaterial : this.material
+    this.presentQuad.material = a.x + a.y + b.y + b.z > 0 ? glass : this.material
     this.renderer.render(this.scene, this.camera)
   }
 
@@ -683,7 +699,7 @@ export class Upscaler {
     this.target.dispose()
     this.easu.dispose()
     this.material.dispose()
-    this.glassMaterial.dispose()
+    this.glassMaterial?.dispose()
     this.easuMaterial.dispose()
   }
 }

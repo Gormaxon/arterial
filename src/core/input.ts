@@ -28,6 +28,32 @@ const LOCK_RETRY_MIN_MS = 200
 /** A request neither granted nor refused in this long is taken as refused. */
 const LOCK_PENDING_MS = 2000
 
+/**
+ * The keys locked to the page in fullscreen (holdKeyboard): every key a game may hold with Ctrl, and Esc — but not Tab,
+ * Alt or the Windows/Command key, so Alt+Tab, Win+Tab and the Windows key still switch window. With every key locked,
+ * Alt+Tab reached the page instead (and a game's Tab did whatever Tab does there).
+ */
+const LOCKED_KEYS = [
+  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((c) => `Key${c}`),
+  ...'0123456789'.split('').map((d) => `Digit${d}`),
+  ...'0123456789'.split('').map((d) => `Numpad${d}`),
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`),
+  'Escape', 'Space', 'Enter', 'Backspace', 'Delete', 'Insert', 'Home', 'End', 'PageUp', 'PageDown',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
+  'CapsLock', 'Backquote', 'Minus', 'Equal', 'BracketLeft', 'BracketRight', 'Backslash', 'Semicolon', 'Quote', 'Comma',
+  'Period', 'Slash', 'ContextMenu', 'NumpadAdd', 'NumpadSubtract', 'NumpadMultiply', 'NumpadDivide', 'NumpadDecimal',
+  'NumpadEnter', 'IntlBackslash', 'IntlRo', 'IntlYen',
+  // The browser's own keys: a Chromebook's top row is these (Back, Forward, Refresh), and unlocked they navigate away
+  // or reload mid-game.
+  'BrowserBack', 'BrowserForward', 'BrowserRefresh', 'BrowserHome', 'BrowserSearch', 'BrowserFavorites', 'BrowserStop',
+]
+/**
+ * After the locked fullscreen is left (by holding Esc), ms in which a lock request does not ask for it again: the held
+ * Esc's repeats resumed play straight back into it. Where Esc itself leaves fullscreen (no keyboard lock), every pause
+ * does, and a RESUME goes straight back in as before.
+ */
+const FULLSCREEN_REGRACE_MS = 2000
+
 export class Input {
   readonly keys = new Set<string>()
   private readonly mouseButtons = new Set<number>()
@@ -136,6 +162,8 @@ export class Input {
   holdKeyboard = false
   /** The keyboard is locked to the page now (holdKeyboard, in fullscreen). */
   private keyboardHeld = false
+  /** When fullscreen was last left (performance.now()): see FULLSCREEN_REGRACE_MS. */
+  private leftFullscreenAt = -Infinity
 
   /**
    * The pointer is wanted held but is not yet: a request is with the browser, or it was refused and is to be asked for
@@ -211,8 +239,9 @@ export class Input {
         return
       }
     }
-    // Fullscreen after the pointer (asking for fullscreen uses up the click that asked; the lock needs it first).
-    if (this.holdKeyboard && !document.fullscreenElement) {
+    // Fullscreen after the pointer (asking for fullscreen uses up the click that asked; the lock needs it first). Not
+    // straight after it was left: holding Esc to leave it went straight back in.
+    if (this.holdKeyboard && !document.fullscreenElement && performance.now() - this.leftFullscreenAt > FULLSCREEN_REGRACE_MS) {
       try {
         const full = document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }) as Promise<void> | undefined
         full?.catch(() => undefined)
@@ -378,7 +407,12 @@ export class Input {
       if (e.code === 'Space') this.spacePresses++
     }
     this.keys.add(e.code)
-    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'F3'].includes(e.code)) {
+    // The page's own uses of these (scrolling, focus) cancelled — but not in a text box or a slider while the pointer is
+    // free: there they type, move the caret and step the value (a level's name with a space in it; a slider's arrow keys).
+    const tag = (e.target as { tagName?: string } | null)?.tagName
+    const typing = !this.locked && (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')
+    // (Tab and F3 always: F3 is the browser's find, and its bar would take the keyboard from the menu.)
+    if (e.code === 'Tab' || e.code === 'F3' || (!typing && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code))) {
       e.preventDefault()
     }
     // While the pointer is held, Ctrl+anything is the game's (a held Ctrl is a control): not the browser's save, bookmark,
@@ -392,14 +426,20 @@ export class Input {
   private onFullscreenChange = (): void => {
     const kb = (navigator as unknown as { keyboard?: { lock?: (codes?: string[]) => Promise<void> } }).keyboard
     if (!document.fullscreenElement) {
+      // Left while the keyboard was locked: a held Esc (see FULLSCREEN_REGRACE_MS).
+      if (this.keyboardHeld) this.leftFullscreenAt = performance.now()
       this.keyboardHeld = false
       return
     }
-    if (!this.holdKeyboard || !kb?.lock) return
-    kb.lock().then(
-      () => void (this.keyboardHeld = !!document.fullscreenElement),
-      () => void (this.keyboardHeld = false),
-    )
+    const lock = kb?.lock
+    if (!this.holdKeyboard || !lock) return
+    // The listed keys (LOCKED_KEYS); a browser that will not take the list locks every key, as before.
+    lock.call(kb, LOCKED_KEYS)
+      .catch(() => lock.call(kb))
+      .then(
+        () => void (this.keyboardHeld = !!document.fullscreenElement),
+        () => void (this.keyboardHeld = false),
+      )
   }
 
   private onKeyUp = (e: KeyboardEvent): void => {

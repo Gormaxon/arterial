@@ -83,6 +83,11 @@ export function seedSurfaceBoxes(key: string | null, parts: Part[]): void {
 export abstract class Buildable extends Entity {
   /** Does the player collide with it? */
   solid = true
+  /**
+   * Solid to movement only (you and what walks), not to rays: line of sight, rounds and probes pass it. For dressing
+   * high up in a room (the rig's beams and ducts): a ray tests none of its triangles (CollisionSystem.raycast).
+   */
+  movementOnly = false
   /** Does it render? */
   visible = true
   /** Lava, spikes — the hook for a damage system. */

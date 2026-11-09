@@ -193,6 +193,9 @@ export interface CellBake {
   /** Collision triangle soup (positions only) and each triangle's owner, as a global entity index. */
   collision: THREE.BufferGeometry | null
   owners: Uint32Array
+  /** The same for what is solid to movement only (Buildable.movementOnly): kept apart, so rays never test it. */
+  movement: THREE.BufferGeometry | null
+  movementOwners: Uint32Array
   collisionTriangles: number
   renderTriangles: number
   detailTriangles: number
@@ -353,40 +356,49 @@ export function bakeCell(entities: Buildable[], indexOf: (b: Buildable) => numbe
   }
 
   // --- collision -----------------------------------------------------------------
-  if (!want.collision) return { layers, collision: null, owners: new Uint32Array(0), collisionTriangles: 0, renderTriangles, detailTriangles, culledTriangles }
-  let boxCount = 0
-  const lists: { boxes: import('../prefabs/geometry').BoxSpec[]; owner: number; e: Float32Array }[] = []
+  if (!want.collision) return { layers, collision: null, owners: new Uint32Array(0), movement: null, movementOwners: new Uint32Array(0), collisionTriangles: 0, renderTriangles, detailTriangles, culledTriangles }
+  const lists: Lists = { all: [], count: 0 }
+  const moveLists: Lists = { all: [], count: 0 }
   for (const entity of entities) {
     const boxes = boxesFor(entity)
     if (boxes.length === 0) continue
-    boxCount += boxes.length
+    const into = entity.movementOnly ? moveLists : lists
+    into.count += boxes.length
     _m.copy(entity.object.matrix)
-    lists.push({ boxes, owner: indexOf(entity), e: Float32Array.from(_m.elements) })
+    into.all.push({ boxes, owner: indexOf(entity), e: Float32Array.from(_m.elements) })
   }
-  let collision: THREE.BufferGeometry | null = null
-  const owners = new Uint32Array(boxCount * 12)
-  let collisionTriangles = 0
-  if (boxCount > 0) {
-    const out = new Float32Array(boxCount * 36 * 3)
-    let o = 0
-    let tri = 0
-    for (const { boxes, owner, e } of lists) {
-      for (const b of boxes) {
-        for (let i = 0; i < 36; i++) {
-          const x = CUBE[i * 3]! * b.w + b.x
-          const y = CUBE[i * 3 + 1]! * b.h + b.y
-          const z = CUBE[i * 3 + 2]! * b.d + b.z
-          out[o++] = e[0]! * x + e[4]! * y + e[8]! * z + e[12]!
-          out[o++] = e[1]! * x + e[5]! * y + e[9]! * z + e[13]!
-          out[o++] = e[2]! * x + e[6]! * y + e[10]! * z + e[14]!
-        }
-        for (let t = 0; t < 12; t++) owners[tri++] = owner
-      }
-    }
-    collisionTriangles = tri
-    collision = new THREE.BufferGeometry()
-    collision.setAttribute('position', new THREE.BufferAttribute(out, 3))
-  }
+  const solid = stampBoxes(lists)
+  const movement = stampBoxes(moveLists)
+  return { layers, collision: solid.geometry, owners: solid.owners, movement: movement.geometry, movementOwners: movement.owners, collisionTriangles: solid.owners.length + movement.owners.length, renderTriangles, detailTriangles, culledTriangles }
+}
 
-  return { layers, collision, owners, collisionTriangles, renderTriangles, detailTriangles, culledTriangles }
+/** Entities' collision boxes, each list with its entity's matrix and index, and how many boxes in all. */
+interface Lists {
+  all: { boxes: import('../prefabs/geometry').BoxSpec[]; owner: number; e: Float32Array }[]
+  count: number
+}
+
+/** The boxes as a triangle soup in the world (12 a box), and each triangle's owner. */
+function stampBoxes(lists: Lists): { geometry: THREE.BufferGeometry | null; owners: Uint32Array } {
+  const owners = new Uint32Array(lists.count * 12)
+  if (lists.count === 0) return { geometry: null, owners }
+  const out = new Float32Array(lists.count * 36 * 3)
+  let o = 0
+  let tri = 0
+  for (const { boxes, owner, e } of lists.all) {
+    for (const b of boxes) {
+      for (let i = 0; i < 36; i++) {
+        const x = CUBE[i * 3]! * b.w + b.x
+        const y = CUBE[i * 3 + 1]! * b.h + b.y
+        const z = CUBE[i * 3 + 2]! * b.d + b.z
+        out[o++] = e[0]! * x + e[4]! * y + e[8]! * z + e[12]!
+        out[o++] = e[1]! * x + e[5]! * y + e[9]! * z + e[13]!
+        out[o++] = e[2]! * x + e[6]! * y + e[10]! * z + e[14]!
+      }
+      for (let t = 0; t < 12; t++) owners[tri++] = owner
+    }
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(out, 3))
+  return { geometry, owners }
 }

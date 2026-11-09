@@ -189,6 +189,8 @@ export interface CollisionChunk {
   id: number
   bounds: THREE.Box3
   bvh: MeshBVH
+  /** Solid to movement only: resolving pushes out of it, rays pass it (Buildable.movementOnly). */
+  movementOnly: boolean
   /** Per triangle, in ORIGINAL (pre-BVH) order, the owning entity's global index. */
   owners: Uint32Array
   /**
@@ -209,6 +211,8 @@ export class CollisionSystem {
   private readonly chunkById = new Map<number, CollisionChunk>()
   /** The cells to visit, as an array so a query does not allocate an iterator. */
   private chunkList: CollisionChunk[] = []
+  /** The cells a ray visits: all but those solid to movement only. */
+  private rayList: CollisionChunk[] = []
   private nextChunkId = 1
 
   readonly dynamics: DynamicBody[] = []
@@ -230,16 +234,19 @@ export class CollisionSystem {
     return n
   }
 
-  /** Build (or rebuild) the BVH for a cell. `owners` is each triangle's owning entity index. */
-  setChunk(key: string, geometry: THREE.BufferGeometry, owners: Uint32Array): void {
+  /**
+   * Build (or rebuild) the BVH for a cell. `owners` is each triangle's owning entity index. `movementOnly`: solid to
+   * movement only — resolving pushes out of it, rays (raycast, raycastAny) pass it.
+   */
+  setChunk(key: string, geometry: THREE.BufferGeometry, owners: Uint32Array, movementOnly = false): void {
     this.removeChunk(key)
     geometry.computeBoundingBox()
     const bvh = new MeshBVH(geometry)
     // Read the index AFTER building: MeshBVH is what creates and permutes it.
-    const chunk: CollisionChunk = { id: this.nextChunkId++, bounds: geometry.boundingBox!.clone(), bvh, owners, geometryIndex: geometry.index!.array }
+    const chunk: CollisionChunk = { id: this.nextChunkId++, bounds: geometry.boundingBox!.clone(), bvh, movementOnly, owners, geometryIndex: geometry.index!.array }
     this.chunkMap.set(key, chunk)
     this.chunkById.set(chunk.id, chunk)
-    this.chunkList = [...this.chunkMap.values()]
+    this.listChunks()
     this.sig = null
     this.staticVersion++
   }
@@ -273,9 +280,15 @@ export class CollisionSystem {
     if (!old) return
     this.chunkMap.delete(key)
     this.chunkById.delete(old.id)
-    this.chunkList = [...this.chunkMap.values()]
+    this.listChunks()
     this.sig = null
     this.staticVersion++
+  }
+
+  /** The cells as arrays: all of them (resolving), and those a ray visits. */
+  private listChunks(): void {
+    this.chunkList = [...this.chunkMap.values()]
+    this.rayList = this.chunkList.filter((c) => !c.movementOnly)
   }
 
   /** The entity index for a triangle of one cell, in that cell's BVH numbering. */
@@ -393,6 +406,7 @@ export class CollisionSystem {
     this.chunkMap.clear()
     this.chunkById.clear()
     this.chunkList = []
+    this.rayList = []
     this.dynamics.length = 0
     this.unfiled.length = 0
     this.filed = false
@@ -620,7 +634,7 @@ export class CollisionSystem {
   /** Nearest static hit along a ray. Used for line of sight, decals and hitscan. */
   /** `side`: which faces count; the default, only those turned toward the ray. */
   raycast(origin: THREE.Vector3, direction: THREE.Vector3, far: number, side: THREE.Side = THREE.FrontSide): THREE.Intersection | null {
-    if (this.chunkList.length === 0) return null
+    if (this.rayList.length === 0) return null
     _castRay.set(origin, direction)
     let best: THREE.Intersection | null = null
     let reach = far
@@ -632,7 +646,8 @@ export class CollisionSystem {
     const minX = Math.min(x0, x1), maxX = Math.max(x0, x1)
     const minY = Math.min(y0, y1), maxY = Math.max(y0, y1)
     const minZ = Math.min(z0, z1), maxZ = Math.max(z0, z1)
-    const chunks = this.chunkList
+    // (Not the cells solid to movement only: what is in them, high in a room, is for you to bump into, not to stop a look.)
+    const chunks = this.rayList
     for (let ci = 0; ci < chunks.length; ci++) {
       const chunk = chunks[ci]!
       const b = chunk.bounds

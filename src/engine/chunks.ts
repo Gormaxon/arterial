@@ -35,6 +35,8 @@ export const DETAIL_RANGE = 80
  * part of the scene, not on its own: a drawing of its own was a whole walk, sort and set-up for one draw).
  */
 export const DEPTH_FIRST = -1000
+/** A cell's collision that is solid to movement only goes in under its key with this after it. */
+const MOVEMENT_KEY = '#movement'
 const RELEASE_MARGIN = 60
 /** A camera that moves farther than this in one frame has jumped: the streaming budget is lifted to catch up. */
 const JUMP = 40
@@ -295,6 +297,7 @@ export class StaticChunks {
     this.disposeLayer(cell, 'structure')
     this.disposeLayer(cell, 'detail')
     this.collision.removeChunk(cell.key)
+    this.collision.removeChunk(cell.key + MOVEMENT_KEY)
   }
 
   /**
@@ -412,6 +415,9 @@ export class StaticChunks {
     cell.collisionTriangles = baked.collisionTriangles
     if (baked.collision) this.collision.setChunk(key, baked.collision, baked.owners)
     else this.collision.removeChunk(key)
+    // What is solid to movement only, in a cell of its own that rays pass over (CollisionSystem.raycast).
+    if (baked.movement) this.collision.setChunk(key + MOVEMENT_KEY, baked.movement, baked.movementOwners, true)
+    else this.collision.removeChunk(key + MOVEMENT_KEY)
     // A layer the cell already had is baked again at once, so an edit shows; one it did not have waits to be wanted.
     if (cell.structureReady) this.buildLayer(cell, 'structure')
     if (cell.detailReady) this.buildLayer(cell, 'detail')

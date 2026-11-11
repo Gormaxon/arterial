@@ -26,6 +26,8 @@ export interface Settings {
   effects: number
   /** The HUD's size: a multiple of its own (1). */
   hud: number
+  /** NIKOLAI GRAPHICS quality, 0 low to 3 ultra (render/rt/bake/tier.ts NIKOLAI_QUALITY); 2, HIGH, is his look as it stood. Not part of the presets. */
+  nikolai: number
 }
 
 /** Settings that are a smooth range. */
@@ -47,6 +49,7 @@ export const SETTING_CHOICES = {
   frameGenMult: [2, 3, 4, 5, 6],
   aa: [4, 2, 0],
   effects: [0, 1, 2, 3],
+  nikolai: [0, 1, 2, 3],
 } as const
 
 export type RangeKey = keyof typeof SETTING_RANGE
@@ -56,7 +59,7 @@ export const isChoice = (k: keyof Settings): k is ChoiceKey => k in SETTING_CHOI
 
 const DEFAULTS: Settings = {
   sens: 1, fov: 90, volume: 1, hud: 1,
-  preset: 3, resolution: 1, frameGen: 0, aa: 2, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, effects: 2,
+  preset: 3, resolution: 1, frameGen: 0, aa: 2, fsr: 0, fsrMode: 2, fsrTarget: 1, frameGenMult: 2, effects: 2, nikolai: 2,
 }
 /** The settings a graphics preset is made of: choosing a preset writes them all, changing one by hand makes it custom. */
 export const GRAPHICS_KEYS = ['resolution', 'aa', 'fsr', 'fsrMode', 'fsrTarget', 'frameGen', 'frameGenMult', 'effects'] as const satisfies readonly (keyof Settings)[]

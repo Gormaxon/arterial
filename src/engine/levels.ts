@@ -91,6 +91,20 @@ export class LevelSet {
     return this
   }
 
+  /**
+   * Take a level out of the set (a level deleted). Not the one loaded: load another first. True if it was there and
+   * is gone.
+   */
+  remove(id: string): boolean {
+    if (id === this.current) return false
+    const i = this.entries.findIndex((e) => e.id === id)
+    if (i < 0) return false
+    this.entries.splice(i, 1)
+    this.reached.delete(id)
+    this.completed.delete(id)
+    return true
+  }
+
   get list(): readonly LevelEntry[] {
     return this.entries
   }

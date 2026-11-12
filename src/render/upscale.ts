@@ -56,6 +56,10 @@ uniform float uGore;
 // strength, a flash's strength.
 uniform vec4 uOverA;
 uniform vec4 uOverB;
+// The suit's moves on the glass (Upscaler.motion; ui/motionfx.ts). A: the speed streaks' strength, a dash's smear across
+// and up the view, the streaks' phase. B: a landing's knock, a wall jump's flash (its sign the side), a slide's heat.
+uniform vec4 uMoveA;
+uniform vec4 uMoveB;
 // The crosshair and the visor's compass tape, drawn here rather than as page elements over the canvas (Upscaler.hud).
 uniform vec2 uRes;
 uniform float uCss;
@@ -113,6 +117,14 @@ void main() {
     float sway = uConcuss * uConcuss;
     uv += vec2(sin(vUv.y * 7.0 + uTime * 2.6), cos(vUv.x * 6.0 + uTime * 2.1)) * 0.01 * sway;
   }
+#ifdef SLAM_GLASS
+  // A hard landing knocks the picture down a touch; a slide's heat shimmers along the bottom of the view.
+  uv.y += uMoveB.x * 0.014;
+  if (uMoveB.z > 0.0) {
+    float low = smoothstep(0.1, 0.5, 0.5 - vUv.y) * uMoveB.z;
+    uv.x += sin(vUv.y * 90.0 + uTime * 38.0) * 0.0022 * low;
+  }
+#endif
   // A cross of five taps one SOURCE texel apart.
   vec3 c = texture2D(tFrame, uv).rgb;
   vec3 n = texture2D(tFrame, uv + vec2(0.0, texel.y)).rgb;
@@ -197,6 +209,45 @@ void main() {
     float rim = smoothstep(0.06, 0.42, r2) * k;
     outc = outc * (1.0 - 0.34 * rim) + vec3(0.0, 0.006, 0.022) * rim;
   }
+
+#ifdef SLAM_GLASS
+  // --- the suit's moves (Upscaler.motion; ui/motionfx.ts) ----------------------------------------------------
+  if (uMoveA.x > 0.0) {
+    // Speed: the edges dragged out into streaks round the middle, uneven, with thin bright lines in them; the middle,
+    // where you aim, left sharp.
+    float k = uMoveA.x;
+    float edge = smoothstep(0.03, 0.42, r2) * k;
+    float ang = atan(da.y, da.x);
+    float lines = 0.5 + 0.5 * sin(ang * 41.0 + sin(ang * 7.0 + uMoveA.w) * 3.0 + uMoveA.w * 2.0);
+    lines *= lines;
+    vec2 pull = d * 0.11 * edge * (0.3 + 0.7 * lines);
+    vec3 streak = (texture2D(tFrame, uv - pull * 0.5).rgb + texture2D(tFrame, uv - pull).rgb) * 0.5;
+    outc = mix(outc, streak, 0.8 * edge);
+    outc += vec3(0.8, 0.92, 1.0) * pow(lines, 8.0) * edge * 0.1;
+  }
+  if (uMoveA.y != 0.0 || uMoveA.z != 0.0) {
+    // A dash: the picture smeared along it, red and blue pulled apart either way, more toward the edges.
+    vec2 sm = uMoveA.yz * (0.012 + 0.03 * r2);
+    vec3 ahead = texture2D(tFrame, uv + sm).rgb;
+    vec3 behind = texture2D(tFrame, uv - sm).rgb;
+    float k = min(1.0, length(uMoveA.yz));
+    outc = mix(outc, vec3(behind.r, (ahead.g + behind.g + outc.g) / 3.0, ahead.b), 0.75 * k);
+  }
+  // The landing's knock: the edges dark for a moment.
+  if (uMoveB.x > 0.0) outc *= 1.0 - 0.4 * smoothstep(0.04, 0.4, r2) * uMoveB.x;
+  if (uMoveB.y != 0.0) {
+    // A wall jump: a cold flash on the side you kicked off, its red fringed off toward that edge.
+    float sgn = sign(uMoveB.y);
+    float side = smoothstep(0.12, 0.5, d.x * sgn) * abs(uMoveB.y);
+    outc.r = mix(outc.r, texture2D(tFrame, uv + vec2(0.008 * sgn, 0.0)).r, side);
+    outc += vec3(0.62, 0.82, 1.0) * side * 0.22;
+  }
+  if (uMoveB.z > 0.0) {
+    // A slide: the bottom of the view warmed, as the boots scrape.
+    float low = smoothstep(0.18, 0.5, 0.5 - vUv.y) * uMoveB.z;
+    outc = mix(outc, outc * vec3(1.1, 0.97, 0.88), low);
+  }
+#endif
 
   float luma = dot(outc, vec3(0.299, 0.587, 0.114));
   // Sensor grain: heavier in the dark where a sensor is noisiest, redrawn every frame.
@@ -427,6 +478,8 @@ export class Upscaler {
         uGore: { value: 0 },
         uOverA: { value: new THREE.Vector4() },
         uOverB: { value: new THREE.Vector4() },
+        uMoveA: { value: new THREE.Vector4() },
+        uMoveB: { value: new THREE.Vector4() },
         uConcuss: { value: 0 },
         uShock: { value: 1 },
         uShockAt: { value: new THREE.Vector2(0.5, 0.5) },
@@ -616,6 +669,17 @@ export class Upscaler {
     ;(u.uOverB!.value as THREE.Vector4).copy(b)
   }
 
+  /**
+   * The suit's moves on the glass this frame (see the shader's; ui/motionfx.ts): `a` the speed streaks, a dash's smear
+   * (across, up), the streaks' phase; `b` a landing's knock, a wall jump's flash (signed: its side), a slide's heat. All
+   * 0: nothing drawn. Set by whoever owns it, every frame it changes.
+   */
+  motion(a: THREE.Vector4Like, b: THREE.Vector4Like): void {
+    const u = this.material.uniforms
+    ;(u.uMoveA!.value as THREE.Vector4).copy(a)
+    ;(u.uMoveB!.value as THREE.Vector4).copy(b)
+  }
+
   /** A kill's flush of red at the edges, 0..1: the strongest wins, gone in about a third of a second. */
   gore(amount: number): void {
     this.goreAmount = Math.min(1, Math.max(this.goreAmount, amount))
@@ -768,7 +832,10 @@ export class Upscaler {
     const a = u.uOverA!.value as THREE.Vector4
     const b = u.uOverB!.value as THREE.Vector4
     const g = u.uGlitch!.value as THREE.Vector4
-    this.presentQuad.material = g.x > 0 ? glitchy : a.x + a.y + b.y + b.z > 0 ? glass : this.material
+    const ma = u.uMoveA!.value as THREE.Vector4
+    const mb = u.uMoveB!.value as THREE.Vector4
+    const moving = ma.x > 0 || ma.y !== 0 || ma.z !== 0 || mb.x > 0 || mb.y !== 0 || mb.z > 0
+    this.presentQuad.material = g.x > 0 ? glitchy : a.x + a.y + b.y + b.z > 0 || moving ? glass : this.material
     this.renderer.render(this.scene, this.camera)
   }
 

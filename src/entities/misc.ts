@@ -48,6 +48,12 @@ export class TriggerVolume extends Entity {
   /** Event name emitted on the world bus. Defaults to the entity name. */
   event = ''
   once = false
+  /**
+   * A thing to do there (the user, 2026-11-12: "for interactable objectives make you come up and an E prompt comes up to
+   * do an action"): set, walking in does nothing but show "[E] <this>" (main.ts), and the event is fired by pressing E
+   * inside it (`use`). Empty: an ordinary trigger, fired by walking in.
+   */
+  interact = ''
 
   private inside = false
   private spent = false
@@ -59,6 +65,19 @@ export class TriggerVolume extends Entity {
     this.size.set(s[0], s[1], s[2])
     this.event = str(def.props, 'event', '')
     this.once = bool(def.props, 'once', false)
+    this.interact = str(def.props, 'interact', '')
+  }
+
+  /** You are in it, it has something to do (`interact`), and it is not used up. */
+  get usable(): boolean {
+    return this.interact !== '' && this.inside && !this.spent
+  }
+
+  /** Do its thing (E, in it): its event, once if it is a once. */
+  use(): void {
+    if (!this.usable) return
+    this.world.events.emit(this.eventName, { trigger: this, event: this.eventName } satisfies TriggerEvent)
+    if (this.once) this.spent = true
   }
 
   private get eventName(): string {
@@ -79,6 +98,8 @@ export class TriggerVolume extends Entity {
     const now = this.aabb.containsPoint(this.world.playerPosition)
     if (now === this.inside) return
     this.inside = now
+    // Something to do there: walking in only offers it (use).
+    if (this.interact) return
 
     const payload: TriggerEvent = { trigger: this, event: this.eventName }
     if (now) {
@@ -106,6 +127,7 @@ export class TriggerVolume extends Entity {
     }
     if (this.event) props.event = this.event
     if (this.once) props.once = true
+    if (this.interact) props.interact = this.interact
     return props
   }
 }

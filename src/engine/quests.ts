@@ -17,6 +17,9 @@
  * a set of events each happening once (`all`), not one event some number of times: "both of reception's spawners
  * cleared".
  *
+ * REVEALED. A sub can be hidden until something happens (`reveal`: an event): not shown, not counted and not live until
+ * then — "eliminate the hostiles" appears when the hostiles do. It is still required: the objective waits for it.
+ *
  * The system keeps state and says what it is; it draws nothing. It outlives level loads
  * (it hears events through the bus's tap), so progress is not lost when a level is replaced.
  */
@@ -44,6 +47,8 @@ export interface ObjectiveDef {
   match?: unknown
   /** Counts whenever it happens but is not needed to finish the quest. */
   optional?: boolean
+  /** A sub hidden — not shown, not counted — until this event has happened (then announced: a `revealed` notice). */
+  reveal?: string
 }
 
 export interface QuestDef {
@@ -82,12 +87,13 @@ export interface QuestView {
   objectives: QuestObjectiveView[]
 }
 
-export type QuestSave = Record<string, { state: QuestState; progress: number[]; subs?: number[][] }>
+export type QuestSave = Record<string, { state: QuestState; progress: number[]; subs?: number[][]; revealed?: string[] }>
 
 export type QuestNotice =
   | { kind: 'started'; quest: string; title: string }
   | { kind: 'objective'; quest: string; objective: string; text: string }
   | { kind: 'sub'; quest: string; objective: string; sub: string; text: string }
+  | { kind: 'revealed'; quest: string; objective: string; sub: string; text: string }
   | { kind: 'completed'; quest: string; title: string; reward: Record<string, number> | null }
   | { kind: 'failed'; quest: string; title: string }
 
@@ -103,6 +109,8 @@ interface Run {
   progress: number[]
   /** Each objective's subs' counts, as `progress` (empty for one with none). */
   subs: number[][]
+  /** The `reveal` events heard while it ran. */
+  revealed: Set<string>
 }
 
 /** How many times it must happen to be done (for `all`: how many events). */
@@ -116,9 +124,10 @@ function counted(o: ObjectiveDef, raw: number): number {
   for (let b = raw; b; b &= b - 1) n++
   return n
 }
-const fresh = (def: QuestDef): { progress: number[]; subs: number[][] } => ({
+const fresh = (def: QuestDef): { progress: number[]; subs: number[][]; revealed: Set<string> } => ({
   progress: def.objectives.map(() => 0),
   subs: def.objectives.map((o) => (o.subs ?? []).map(() => 0)),
+  revealed: new Set<string>(),
 })
 
 /** Is it done, at `raw` (its count, or its `all` bits)? */
@@ -140,11 +149,16 @@ function advance(o: ObjectiveDef, raw: number, name: string, payload: unknown): 
  * Which of `list` can be worked on: every one not done (not `ordered`), or the next required one not done (`ordered`)
  * — and the optional ones not done, always. Done is told by each one's count in `raw`, or given (`finished`).
  */
-function liveIn(list: ObjectiveDef[], raw: number[], ordered: boolean, finished?: boolean[]): Set<number> {
+function liveIn(list: ObjectiveDef[], raw: number[], ordered: boolean, finished?: boolean[], revealed?: Set<string>): Set<number> {
   const live = new Set<number>()
   let nextRequired = true
   list.forEach((o, i) => {
     if (finished ? finished[i] : done(o, raw[i]!)) return
+    // Hidden until its event: not live, and (ordered) nothing after it is either.
+    if (o.reveal && !revealed?.has(o.reveal)) {
+      if (!o.optional) nextRequired = false
+      return
+    }
     if (o.optional) live.add(i)
     else if (!ordered || nextRequired) {
       live.add(i)
@@ -236,6 +250,7 @@ export class QuestSystem {
       if (r.state === 'inactive') continue
       out[id] = { state: r.state, progress: [...r.progress] }
       if (r.subs.some((x) => x.length)) out[id]!.subs = r.subs.map((x) => [...x])
+      if (r.revealed.size) out[id]!.revealed = [...r.revealed]
     }
     return out
   }
@@ -261,6 +276,7 @@ export class QuestSystem {
       run.state = s.state
       run.progress = run.def.objectives.map((_, i) => s.progress[i] ?? 0)
       run.subs = run.def.objectives.map((o, i) => (o.subs ?? []).map((_, j) => s.subs?.[i]?.[j] ?? 0))
+      run.revealed = new Set(s.revealed ?? [])
     }
     this.version++
   }
@@ -274,7 +290,8 @@ export class QuestSystem {
       objectives: run.def.objectives.map((o, i) => {
         const subs = o.subs ?? []
         const raw = run.subs[i]!
-        const subLive = live.has(i) || (subs.length > 0 && this.objectiveDone(run, i)) ? liveIn(subs, raw, o.subsOrdered === true) : new Set<number>()
+        const subLive = live.has(i) || (subs.length > 0 && this.objectiveDone(run, i)) ? liveIn(subs, raw, o.subsOrdered === true, undefined, run.revealed) : new Set<number>()
+        const shown = (x: ObjectiveDef): boolean => !x.reveal || run.revealed.has(x.reveal)
         return {
           id: o.id,
           text: o.text,
@@ -284,16 +301,11 @@ export class QuestSystem {
           done: this.objectiveDone(run, i),
           optional: o.optional === true,
           current: live.has(i),
-          subs: subs.map((x, j) => ({
-            id: x.id,
-            text: x.text,
-            progress: counted(x, raw[j]!),
-            count: needed(x),
-            done: done(x, raw[j]!),
-            optional: x.optional === true,
-            current: subLive.has(j),
-            subs: [],
-          })),
+          subs: subs.flatMap((x, j) =>
+            shown(x)
+              ? [{ id: x.id, text: x.text, progress: counted(x, raw[j]!), count: needed(x), done: done(x, raw[j]!), optional: x.optional === true, current: subLive.has(j), subs: [] }]
+              : [],
+          ),
         }
       }),
     }
@@ -320,6 +332,18 @@ export class QuestSystem {
     }
     for (const run of this.runs.values()) {
       if (run.state !== 'active') continue
+      // A hidden sub this event reveals: shown from now on, and announced.
+      run.def.objectives.forEach((o) => {
+        for (const x of o.subs ?? []) {
+          if (x.reveal !== name || run.revealed.has(name)) continue
+          run.revealed.add(name)
+          this.version++
+          this.notify({ kind: 'revealed', quest: run.def.id, objective: o.id, sub: x.id, text: x.text })
+        }
+      })
+    }
+    for (const run of this.runs.values()) {
+      if (run.state !== 'active') continue
       const live = this.liveObjectives(run)
       const doneNow: number[] = []
       // What it says on the bus, sent once all of this event is counted. Sent as it happened, the bus handed it straight
@@ -333,7 +357,7 @@ export class QuestSystem {
           const wasDone = this.objectiveDone(run, i)
           if (!live.has(i) && !wasDone) return
           const raw = run.subs[i]!
-          const subLive = liveIn(o.subs, raw, o.subsOrdered === true)
+          const subLive = liveIn(o.subs, raw, o.subsOrdered === true, undefined, run.revealed)
           let changed = false
           o.subs.forEach((x, j) => {
             if (!subLive.has(j)) return

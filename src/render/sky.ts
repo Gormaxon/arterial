@@ -116,7 +116,7 @@ export function applySky(scene: THREE.Scene): THREE.Mesh | null {
       .replace('#include <project_vertex>', '#include <project_vertex>\n\tgl_Position.z = gl_Position.w;')
     shader.fragmentShader = shader.fragmentShader
       .replace('void main() {', 'varying vec3 vSkyDir;\nuniform vec4 uMist;\nvoid main() {')
-      .replace('#include <fog_fragment>', '#include <fog_fragment>\n\tif (uMist.w > 0.0) gl_FragColor.rgb = uMist.rgb * mix(1.0, 0.58, smoothstep(0.02, 0.75, normalize(vSkyDir).y));')
+      .replace('#include <fog_fragment>', '#include <fog_fragment>\n\tif (uMist.w > 0.0) gl_FragColor.rgb = uMist.rgb * mix(1.0, 0.72, smoothstep(0.02, 0.75, normalize(vSkyDir).y));')
       .replace('#include <map_fragment>', 'vec4 sampledDiffuseColor = texture2D( map, equirectUv( normalize( vSkyDir ) ) );\ndiffuseColor *= sampledDiffuseColor;')
   }
   const box = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), mat)

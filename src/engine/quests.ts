@@ -47,8 +47,11 @@ export interface ObjectiveDef {
   match?: unknown
   /** Counts whenever it happens but is not needed to finish the quest. */
   optional?: boolean
-  /** A sub hidden — not shown, not counted — until this event has happened (then announced: a `revealed` notice). */
-  reveal?: string
+  /**
+   * A sub hidden — not shown, not counted — until this event has happened (then announced: a `revealed` notice); or the
+   * first of these to happen (a room's fight shown as whichever of its spawners brings the first).
+   */
+  reveal?: string | readonly string[]
 }
 
 export interface QuestDef {
@@ -149,13 +152,24 @@ function advance(o: ObjectiveDef, raw: number, name: string, payload: unknown): 
  * Which of `list` can be worked on: every one not done (not `ordered`), or the next required one not done (`ordered`)
  * — and the optional ones not done, always. Done is told by each one's count in `raw`, or given (`finished`).
  */
+/** Has `o` been revealed (or was it never hidden)? */
+function isRevealed(o: ObjectiveDef, revealed?: Set<string>): boolean {
+  if (!o.reveal) return true
+  if (typeof o.reveal === 'string') return revealed?.has(o.reveal) === true
+  return o.reveal.some((e) => revealed?.has(e) === true)
+}
+/** Does `name` reveal `o`? */
+function revealsOn(o: ObjectiveDef, name: string): boolean {
+  return typeof o.reveal === 'string' ? o.reveal === name : o.reveal?.includes(name) === true
+}
+
 function liveIn(list: ObjectiveDef[], raw: number[], ordered: boolean, finished?: boolean[], revealed?: Set<string>): Set<number> {
   const live = new Set<number>()
   let nextRequired = true
   list.forEach((o, i) => {
     if (finished ? finished[i] : done(o, raw[i]!)) return
     // Hidden until its event: not live, and (ordered) nothing after it is either.
-    if (o.reveal && !revealed?.has(o.reveal)) {
+    if (!isRevealed(o, revealed)) {
       if (!o.optional) nextRequired = false
       return
     }
@@ -291,7 +305,7 @@ export class QuestSystem {
         const subs = o.subs ?? []
         const raw = run.subs[i]!
         const subLive = live.has(i) || (subs.length > 0 && this.objectiveDone(run, i)) ? liveIn(subs, raw, o.subsOrdered === true, undefined, run.revealed) : new Set<number>()
-        const shown = (x: ObjectiveDef): boolean => !x.reveal || run.revealed.has(x.reveal)
+        const shown = (x: ObjectiveDef): boolean => isRevealed(x, run.revealed)
         return {
           id: o.id,
           text: o.text,
@@ -335,8 +349,11 @@ export class QuestSystem {
       // A hidden sub this event reveals: shown from now on, and announced.
       run.def.objectives.forEach((o) => {
         for (const x of o.subs ?? []) {
-          if (x.reveal !== name || run.revealed.has(name)) continue
+          if (!revealsOn(x, name) || run.revealed.has(name)) continue
+          const before = isRevealed(x, run.revealed)
           run.revealed.add(name)
+          // Shown already (another of its events came first): nothing new to say.
+          if (before) continue
           this.version++
           this.notify({ kind: 'revealed', quest: run.def.id, objective: o.id, sub: x.id, text: x.text })
         }

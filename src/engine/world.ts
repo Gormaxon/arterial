@@ -98,6 +98,8 @@ export interface LevelFile {
   name: string
   version: 1
   fog?: { color: number; near: number; far: number }
+  /** A thick mist that is also the sky (render/mist.ts): its colour as shown, and density per metre. The FOB's. */
+  mist?: { color: number; density: number }
   background?: number
   entities: EntityDef[]
 }
@@ -163,6 +165,8 @@ export class World {
   detail = 1
 
   levelName = ''
+  /** The level's mist (LevelFile.mist), or null: read by the renderer (render/mist.ts). */
+  mist: { color: number; density: number } | null = null
   /** The level's static geometry: baked in cells, each with its own meshes and collision (see chunks.ts). */
   readonly statics = new StaticChunks(this.scene, this.collision)
   /** The pool that lends a few real lights to the nearest placed ones (see lightpool.ts). */
@@ -459,6 +463,8 @@ export class World {
   private beginLevel(file: LevelFile): EntityDef[] {
     this.clear()
     this.levelName = typeof file?.name === 'string' ? file.name : ''
+    const m = file?.mist
+    this.mist = m && typeof m.color === 'number' && typeof m.density === 'number' ? { color: m.color, density: m.density } : null
 
     if (file.background !== undefined) this.scene.background = new THREE.Color(file.background)
     if (file.fog) this.scene.fog = new THREE.Fog(file.fog.color, file.fog.near, file.fog.far)
@@ -720,6 +726,7 @@ export class World {
     if (fog instanceof THREE.Fog) {
       file.fog = { color: fog.color.getHex(), near: fog.near, far: fog.far }
     }
+    if (this.mist) file.mist = { ...this.mist }
     // Stable order so two serialises of the same level compare equal.
     const all = [...this.entities.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     for (const e of all) if (!e.transient) file.entities.push(e.serialize())

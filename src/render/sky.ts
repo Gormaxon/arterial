@@ -9,6 +9,7 @@
 
 import * as THREE from 'three'
 import { fbm, takeBakedSky } from './textures'
+import { mistUniform } from './mist'
 
 const W = 1024
 const H = 512
@@ -107,12 +108,15 @@ export function applySky(scene: THREE.Scene): THREE.Mesh | null {
   tex.mapping = THREE.UVMapping
   const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, depthWrite: false, fog: false })
   mat.onBeforeCompile = (shader) => {
+    // A level's mist (render/mist.ts) is the whole sky: its colour, as everything far in it ends on.
+    shader.uniforms.uMist = mistUniform
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', 'varying vec3 vSkyDir;\nvoid main() {\n\tvSkyDir = position;')
       // Onto the far plane, so anything solid in front of it wins the depth test.
       .replace('#include <project_vertex>', '#include <project_vertex>\n\tgl_Position.z = gl_Position.w;')
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', 'varying vec3 vSkyDir;\nvoid main() {')
+      .replace('void main() {', 'varying vec3 vSkyDir;\nuniform vec4 uMist;\nvoid main() {')
+      .replace('#include <fog_fragment>', '#include <fog_fragment>\n\tif (uMist.w > 0.0) gl_FragColor.rgb = uMist.rgb * mix(1.0, 0.58, smoothstep(0.02, 0.75, normalize(vSkyDir).y));')
       .replace('#include <map_fragment>', 'vec4 sampledDiffuseColor = texture2D( map, equirectUv( normalize( vSkyDir ) ) );\ndiffuseColor *= sampledDiffuseColor;')
   }
   const box = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), mat)

@@ -51,6 +51,7 @@ uniform float uShock;
 uniform vec2 uShockAt;
 uniform float uSlow;
 uniform float uGore;
+uniform vec2 uAlarm;
 // An overlay on the glass, drawn over everything here (Upscaler.overlay): what a game lays over the view — in SANGUINE the
 // slam's (ui/slamfx.ts). A: the edges darkened, the streaks' strength, the two streak layers' phase. B: a ring's scale and
 // strength, a flash's strength.
@@ -272,6 +273,14 @@ void main() {
     outc = mix(outc, outc * vec3(1.35, 0.42, 0.38) + vec3(0.11, 0.0, 0.0), ring);
   }
 
+  // A level's alarm (Upscaler.alarm): every light gone red — the picture's colour drawn into red by its brightness — and
+  // brighter each time a beacon's turn comes round (uAlarm.y, 0..1).
+  if (uAlarm.x > 0.0) {
+    float l = dot(outc, vec3(0.299, 0.587, 0.114));
+    vec3 red = vec3(l * 1.3 + 0.025, l * 0.17, l * 0.14);
+    outc = mix(outc, red, 0.74 * uAlarm.x) * (1.0 + 0.4 * uAlarm.y * uAlarm.x);
+  }
+
   // --- the HUD's moving parts (Upscaler.hud), in CSS pixels from the top left ---------------------------------
   vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y) / uCss;
   float aa = 0.75 / uCss;
@@ -476,6 +485,7 @@ export class Upscaler {
         uTime: { value: 0 },
         uPulse: { value: 0 },
         uGore: { value: 0 },
+        uAlarm: { value: new THREE.Vector2(0, 0) },
         uOverA: { value: new THREE.Vector4() },
         uOverB: { value: new THREE.Vector4() },
         uMoveA: { value: new THREE.Vector4() },
@@ -683,6 +693,15 @@ export class Upscaler {
   /** A kill's flush of red at the edges, 0..1: the strongest wins, gone in about a third of a second. */
   gore(amount: number): void {
     this.goreAmount = Math.min(1, Math.max(this.goreAmount, amount))
+  }
+
+  /**
+   * A level's alarm (the user, 2026-11-14: "then everything goes red, all lights go red, alarms start blaring"): `amount`
+   * 0..1 how far the picture is drawn into red, `beat` 0..1 a beacon's light coming round. Set every frame it changes;
+   * 0 is the plain pass.
+   */
+  alarm(amount: number, beat = 0): void {
+    ;(this.material.uniforms.uAlarm!.value as THREE.Vector2).set(Math.max(0, Math.min(1, amount)), Math.max(0, Math.min(1, beat)))
   }
 
   pulse(amount = 1): void {

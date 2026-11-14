@@ -54,9 +54,16 @@ export class TriggerVolume extends Entity {
    * inside it (`use`). Empty: an ordinary trigger, fired by walking in.
    */
   interact = ''
+  /**
+   * Dormant until this event ('' never): neither walked into nor used before it (the way out of a level after its alarm:
+   * the exfil point under the shaft, armed by `mission:exfil`). Kept armed by a checkpoint reached after it.
+   */
+  armOn = ''
 
   private inside = false
   private spent = false
+  private armed = true
+  private unarm: (() => void) | null = null
   private readonly aabb = new THREE.Box3()
 
   constructor(def: EntityDef) {
@@ -66,11 +73,24 @@ export class TriggerVolume extends Entity {
     this.event = str(def.props, 'event', '')
     this.once = bool(def.props, 'once', false)
     this.interact = str(def.props, 'interact', '')
+    this.armOn = str(def.props, 'armOn', '').trim()
+    this.armed = !this.armOn
   }
 
-  /** You are in it, it has something to do (`interact`), and it is not used up. */
+  override onSpawn(): void {
+    super.onSpawn()
+    if (this.armOn) this.unarm = this.world.events.on(this.armOn, () => (this.armed = true))
+  }
+
+  override onDestroy(): void {
+    this.unarm?.()
+    this.unarm = null
+    super.onDestroy()
+  }
+
+  /** You are in it, it has something to do (`interact`), and it is not used up (nor dormant: armOn). */
   get usable(): boolean {
-    return this.interact !== '' && this.inside && !this.spent
+    return this.interact !== '' && this.inside && !this.spent && this.armed
   }
 
   /** Do its thing (E, in it): its event, once if it is a once. */
@@ -89,7 +109,7 @@ export class TriggerVolume extends Entity {
   }
 
   override onUpdate(_dt: number): void {
-    if (this.spent) return
+    if (this.spent || !this.armed) return
     // Rebuilt every tick from the live position — six additions. Computed once at
     // spawn, a trigger moved in build mode kept firing at the spot it used to be.
     const p = this.object.position
@@ -112,13 +132,15 @@ export class TriggerVolume extends Entity {
 
   /** For a checkpoint (engine/checkpoints.ts): spent stays spent, and you inside it (as you are, at one) does not walk in again. */
   override saveState(): unknown {
-    return this.inside || this.spent ? { inside: this.inside, spent: this.spent } : undefined
+    const armed = this.armOn !== '' && this.armed
+    return this.inside || this.spent || armed ? { inside: this.inside, spent: this.spent, ...(armed ? { armed } : {}) } : undefined
   }
 
   override loadState(state: unknown): void {
-    const s = state as { inside?: unknown; spent?: unknown } | null
+    const s = state as { inside?: unknown; spent?: unknown; armed?: unknown } | null
     this.inside = s?.inside === true
     this.spent = s?.spent === true
+    if (this.armOn) this.armed = s?.armed === true
   }
 
   protected override serializeProps(): Record<string, unknown> {
@@ -128,6 +150,7 @@ export class TriggerVolume extends Entity {
     if (this.event) props.event = this.event
     if (this.once) props.once = true
     if (this.interact) props.interact = this.interact
+    if (this.armOn) props.armOn = this.armOn
     return props
   }
 }

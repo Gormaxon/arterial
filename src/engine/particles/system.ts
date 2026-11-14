@@ -106,7 +106,8 @@ const COUNT_FRAMES = 15
 const DEFAULT_CAPACITY: ParticleCapacity = { soft: 1024, smoke: 512, glow: 2048, streak: 1024, tracer: 128, fireball: 32 }
 
 export class ParticleWorld {
-  readonly ramps = new RampTable(192)
+  // (256: the effects the game registers outgrew 192 — the enemy's spawn flash and the ceiling's break, 2026-11-14.)
+  readonly ramps = new RampTable(256)
   readonly effects = new EffectRegistry(this.ramps)
   /** Every batch and chunk pool. Added to the world scene, and drawn fresh each frame under frame generation. */
   readonly root = new THREE.Group()

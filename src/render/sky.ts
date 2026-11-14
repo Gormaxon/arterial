@@ -9,7 +9,7 @@
 
 import * as THREE from 'three'
 import { fbm, takeBakedSky } from './textures'
-import { mistUniform } from './mist'
+import { MIST_NOISE_GLSL, mistTime, mistUniform } from './mist'
 
 const W = 1024
 const H = 512
@@ -110,13 +110,27 @@ export function applySky(scene: THREE.Scene): THREE.Mesh | null {
   mat.onBeforeCompile = (shader) => {
     // A level's mist (render/mist.ts) is the whole sky: its colour, as everything far in it ends on.
     shader.uniforms.uMist = mistUniform
+    shader.uniforms.uMistTime = mistTime
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', 'varying vec3 vSkyDir;\nvoid main() {\n\tvSkyDir = position;')
       // Onto the far plane, so anything solid in front of it wins the depth test.
       .replace('#include <project_vertex>', '#include <project_vertex>\n\tgl_Position.z = gl_Position.w;')
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', 'varying vec3 vSkyDir;\nuniform vec4 uMist;\nvoid main() {')
-      .replace('#include <fog_fragment>', '#include <fog_fragment>\n\tif (uMist.w > 0.0) gl_FragColor.rgb = uMist.rgb * mix(1.0, 0.72, smoothstep(0.02, 0.75, normalize(vSkyDir).y));')
+      .replace('void main() {', `varying vec3 vSkyDir;\nuniform vec4 uMist;\nuniform float uMistTime;\n${MIST_NOISE_GLSL}\nvoid main() {`)
+      // The mist's sky (the user, 2026-11-14: "it looks like a grey sky"): billows of lighter and darker murk drifting
+      // over, the mist's own colour level with the eye (where everything far in it ends), darker overhead.
+      .replace(
+        '#include <fog_fragment>',
+        `#include <fog_fragment>
+	if (uMist.w > 0.0) {
+		vec3 sd = normalize(vSkyDir);
+		float sn = mistFbm(vec3(sd.x * 3.0, sd.y * 4.5, sd.z * 3.0) + vec3(uMistTime * 0.05, 0.0, uMistTime * 0.02));
+		float sm = mistFbm(vec3(sd.x * 7.0, sd.y * 9.0, sd.z * 7.0) + vec3(uMistTime * 0.11, 0.0, uMistTime * 0.05));
+		vec3 sc = uMist.rgb * mix(1.0, 0.7, smoothstep(0.02, 0.75, sd.y));
+		sc = mix(sc * 0.8, sc * 1.25, smoothstep(0.35, 0.8, sn)) * (0.9 + 0.2 * sm);
+		gl_FragColor.rgb = mix(uMist.rgb, sc, smoothstep(0.0, 0.14, abs(sd.y) + 0.02));
+	}`,
+      )
       .replace('#include <map_fragment>', 'vec4 sampledDiffuseColor = texture2D( map, equirectUv( normalize( vSkyDir ) ) );\ndiffuseColor *= sampledDiffuseColor;')
   }
   const box = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), mat)

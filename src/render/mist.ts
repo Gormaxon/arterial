@@ -14,6 +14,26 @@ import * as THREE from 'three'
 export const MIST = new THREE.Vector4(0, 0, 0, 0)
 export const mistUniform = { value: MIST }
 
+/** Seconds, for the mist's billows on the sky (main.ts moves it on each frame). */
+export const mistTime = { value: 0 }
+
+/** Value noise and its sum over four octaves, for the mist's billows (the sky here; the flight's fog, ui/flightworld.ts). */
+export const MIST_NOISE_GLSL = /* glsl */ `
+float mistHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float mistNoise(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(mistHash(i), mistHash(i + vec3(1.0, 0.0, 0.0)), f.x), mix(mistHash(i + vec3(0.0, 1.0, 0.0)), mistHash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(mistHash(i + vec3(0.0, 0.0, 1.0)), mistHash(i + vec3(1.0, 0.0, 1.0)), f.x), mix(mistHash(i + vec3(0.0, 1.0, 1.0)), mistHash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}
+float mistFbm(vec3 p) {
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 4; i++) { s += a * mistNoise(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= 0.5; }
+  return s;
+}
+`
+
 /** As a level sets it: its colour (0xRRGGBB as shown) and density, or nothing. */
 export interface MistSetting {
   color: number

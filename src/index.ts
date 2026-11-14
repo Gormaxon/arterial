@@ -45,7 +45,7 @@ export { getMaterial, animateSurfaces, surfaceScale, disposeMaterials, SURFACE_L
 export { surfaceMaps, surfaceSampler, fbm, TEXTURE_SIZE } from './render/textures'
 export { getLevelMaterial, prepareLevelMaterial, animateLevelMaterial, rebuildLevelTextures } from './render/levelmaterial'
 export { applySky, buildSkyTexture } from './render/sky'
-export { MIST, MIST_GLSL, misted, mistUniform, setMist, type MistSetting } from './render/mist'
+export { MIST, MIST_GLSL, MIST_NOISE_GLSL, misted, mistTime, mistUniform, setMist, type MistSetting } from './render/mist'
 export { Upscaler } from './render/upscale'
 export { FSR_MODES } from './render/fsr1'
 export { FrameGen } from './render/framegen'

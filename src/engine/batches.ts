@@ -21,6 +21,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { surfaceOf } from '../render/materials'
 import { getLevelMaterial, surfaceLayer } from '../render/levelmaterial'
 import { toneOf } from './bake'
+import { boundSphere, placedCopy } from '../render/fastgeo'
 
 /** Told of every run of a slot drawn or collapsed. Nothing listens unless Nikolai Graphics is on (render/rt). */
 let rangeListener: ((slot: BatchSlot, start: number, count: number, visible: boolean) => void) | null = null
@@ -93,7 +94,7 @@ class MaterialBatch {
       if (s.count === 0) continue
       s.placer.updateWorldMatrix(true, false)
       s.placedAt.copy(s.placer.matrixWorld)
-      const g = s.geometry.clone().applyMatrix4(s.placer.matrixWorld)
+      const g = placedCopy(s.geometry, s.placer.matrixWorld)
       if (s.layer >= 0) {
         // Drawn in the level's own material: which surface each vertex is, and its piece's shade and cast, as the baked
         // level has them (engine/bake.ts) — so props of every surface are one draw, like the level.
@@ -123,7 +124,7 @@ class MaterialBatch {
       at += s.count
     }
     merged.index.setUsage(THREE.DynamicDrawUsage)
-    merged.computeBoundingSphere()
+    boundSphere(merged)
     this.original = (merged.index.array as Uint16Array | Uint32Array).slice()
     const mesh = new THREE.Mesh(merged, this.material)
     // Already in world space; it never moves as an object.

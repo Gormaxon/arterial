@@ -138,7 +138,7 @@ export function cylPlacer(w: number, h: number, d: number): CylPlace {
     const uv = g.attributes.uv as THREE.BufferAttribute
     for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2 * Math.PI * radius * scale, uv.getY(i) * length * scale)
     uv.needsUpdate = true
-    g.translate(((x0 + x1) / 2 - 0.5) * w, ((y0 + y1) / 2) * h, ((z0 + z1) / 2 - 0.5) * d)
+    moveBy(g, ((x0 + x1) / 2 - 0.5) * w, ((y0 + y1) / 2) * h, ((z0 + z1) / 2 - 0.5) * d)
     return { geometry: g, surface }
   }
 }
@@ -188,6 +188,21 @@ export interface BoxSpec {
 }
 
 /**
+ * A piece moved into place: its positions only. three's translate also put every normal through a normal matrix and
+ * normalised it, for a move that turns none of them — a large share of building a level's props on a slow processor.
+ */
+function moveBy(g: THREE.BufferGeometry, x: number, y: number, z: number): void {
+  const a = (g.attributes.position as THREE.BufferAttribute).array as Float32Array
+  for (let i = 0; i < a.length; i += 3) {
+    a[i] = a[i]! + x
+    a[i + 1] = a[i + 1]! + y
+    a[i + 2] = a[i + 2]! + z
+  }
+  g.boundingBox = null
+  g.boundingSphere = null
+}
+
+/**
  * Box with per-face UVs laid out in world units.
  *
  * BoxGeometry's default UVs are 0..1 per face, which stretches the texture over
@@ -220,7 +235,7 @@ export function box(spec: BoxSpec, surface: SurfaceKey): Part {
   }
   uv.needsUpdate = true
 
-  g.translate(x, y, z)
+  moveBy(g, x, y, z)
   return { geometry: g, surface }
 }
 
@@ -301,7 +316,7 @@ export function tiltedSlab(
   uv.needsUpdate = true
 
   g.rotateX(angle)
-  g.translate(x, y, z)
+  moveBy(g, x, y, z)
   return { geometry: g, surface }
 }
 

@@ -741,6 +741,8 @@ export class World {
     this.updating.length = 0
     this.events.clear()
     this.statics.clear()
+    // The props' batches too: their slots were only collapsed in place as each prop went (StaticBatches.remove).
+    this.batches.clear()
     this.particles.clear()
     this.nav.forget()
     // The pool's lights are kept for reuse; only the placed sources went with their entities.

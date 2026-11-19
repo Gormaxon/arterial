@@ -280,11 +280,20 @@ export class StaticBatches {
     return this.batches.get(level)?.slots ?? []
   }
 
+  /**
+   * Everything gone: every batch's merged mesh out of the scene and its buffers freed, and the batches themselves let
+   * go (their materials with them). Called when the level is cleared (World.clear), after its props have removed their
+   * slots — which, in play, only collapsed each where it was (see remove): the FOB's merged meshes, buffers, materials
+   * and textures were carried into Level 1 that way and never freed (2026-11-19: the Chromebook ran out of memory as
+   * Level 1 came in on top of them).
+   */
   clear(): void {
-    for (const b of this.batches.values()) {
+    for (const b of this.batchList) {
       for (const s of b.slots) s.geometry.dispose()
       b.slots.length = 0
       b.rebuild()
     }
+    this.batches.clear()
+    this.batchList.length = 0
   }
 }

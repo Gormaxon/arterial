@@ -84,6 +84,12 @@ export class BatchSlot {
     readonly onRebuilt: () => void,
     /** In the level material's batch: the surface's layer of it (render/levelmaterial.ts); -1 otherwise. */
     readonly layer = -1,
+    /**
+     * In no room's part (StaticBatches.cells is not asked): what stands between two rooms and is hidden and shown by
+     * its owner — a door's frame and its leaves at rest. Filed under one of its two rooms, a shut door's housing was
+     * not drawn from the other (2026-11-20: the opening's blast door, seen from inside, was a leaf under open sky).
+     */
+    readonly between = false,
   ) {
     this.count = geometry.index ? geometry.index.count : 0
   }
@@ -145,7 +151,7 @@ class MaterialBatch {
         for (const name of Object.keys(g.attributes)) if (name !== 'position' && name !== 'normal' && name !== 'uv' && name !== 'aSurface') g.deleteAttribute(name)
         if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2))
       }
-      const cell = cells ? cells.of(boundBox(g, _box)) : null
+      const cell = cells && !s.between ? cells.of(boundBox(g, _box)) : null
       let group = groups.get(cell)
       if (!group) groups.set(cell, (group = { geos: [], used: [] }))
       group.geos.push(g)
@@ -222,8 +228,11 @@ export class StaticBatches {
 
   constructor(private readonly scene: THREE.Scene) {}
 
-  /** Add a prop's geometry for one material. Returns the slot to collapse its pieces through and to remove it by. */
-  add(material: THREE.Material, geometry: THREE.BufferGeometry, placer: THREE.Object3D, onRebuilt: () => void): BatchSlot {
+  /**
+   * Add a prop's geometry for one material. Returns the slot to collapse its pieces through and to remove it by.
+   * `between`: it belongs to no one room (BatchSlot.between).
+   */
+  add(material: THREE.Material, geometry: THREE.BufferGeometry, placer: THREE.Object3D, onRebuilt: () => void, between = false): BatchSlot {
     // A level surface's material (render/materials.ts) is drawn in the level's one material instead, every surface in
     // one batch: one draw for the props of the whole level, where it was one a surface (nine in the facility).
     const surface = surfaceOf(material)
@@ -233,7 +242,7 @@ export class StaticBatches {
       this.batches.set(key, (b = new MaterialBatch(key, this.scene)))
       this.batchList.push(b)
     }
-    const slot = new BatchSlot(b, geometry, placer, onRebuilt, surface ? surfaceLayer(surface) : -1)
+    const slot = new BatchSlot(b, geometry, placer, onRebuilt, surface ? surfaceLayer(surface) : -1, between)
     b.slots.push(slot)
     b.dirty = true
     return slot

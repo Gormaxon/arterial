@@ -7,7 +7,9 @@
  * cutscene ending all count the same way, because they are all just events. A quest
  * starts the same way (`quest:start:<id>`, or its own `start` event), and finishing one
  * announces `quest:completed:<id>`, which another quest can use as its `start`, so quests
- * chain with no code.
+ * chain with no code. An objective done and a sub-objective done are said by name too
+ * (`quest:objective:<quest>:<objective>`, `quest:subobjective:<quest>:<sub>`), for whatever
+ * follows one: a door, a line over the radio (engine/comms.ts).
  *
  * SUB-OBJECTIVES. An objective can be made of smaller ones (`subs`): the steps within a step of a mission — "sweep the
  * facility" as clear reception, clear storage, clear the hall. Each is an objective like any other, finished by its own
@@ -384,7 +386,7 @@ export class QuestSystem {
             changed = true
             if (done(x, next)) {
               this.notify({ kind: 'sub', quest: run.def.id, objective: o.id, sub: x.id, text: x.text })
-              said.push(['quest:subobjective', { quest: run.def.id, objective: o.id, sub: x.id }])
+              said.push(['quest:subobjective', { quest: run.def.id, objective: o.id, sub: x.id }], [`quest:subobjective:${run.def.id}:${x.id}`, null])
             }
           })
           if (changed) {
@@ -404,7 +406,7 @@ export class QuestSystem {
       for (const i of doneNow) {
         const o = run.def.objectives[i]!
         this.notify({ kind: 'objective', quest: run.def.id, objective: o.id, text: o.text })
-        said.push(['quest:objective', { quest: run.def.id, objective: o.id }])
+        said.push(['quest:objective', { quest: run.def.id, objective: o.id }], [`quest:objective:${run.def.id}:${o.id}`, null])
       }
       // Finished when every required objective is.
       const finished = run.def.objectives.every((o, i) => o.optional || this.objectiveDone(run, i))

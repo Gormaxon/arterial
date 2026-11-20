@@ -9,6 +9,11 @@
  * what is on and goes first, for the moment that cannot wait). Each plays once, unless it is `repeat`; reset() (a death,
  * the level started over) lets them play again. Each line is held for its `hold` seconds, or by its length.
  *
+ * Nothing is said that no longer needs saying (`until`: events that make a transmission moot — the lesson's obstacle
+ * passed, the room cleared): waiting, it is dropped; on, it stops there; asked for afterwards, it is not played. And
+ * what cannot wait its turn but should not lose what it interrupts is `urgent` (hostiles in the room, mid-lesson): it
+ * goes on at once, and the transmission it broke into is said again from its start after it, if it is still wanted.
+ *
  * The system keeps time and says what is on; it draws nothing (the game's HUD does: onLine). It announces
  * `comms:line` ({ id, from, text, index }) as each line comes on, and `comms:done:<id>` when a transmission is over, so a
  * door can open on the end of a briefing, or the next transmission follow it, with no code.
@@ -35,6 +40,10 @@ export interface TransmissionDef {
   cut?: boolean
   /** Seconds after it is asked for before its first line. Default 0. */
   delay?: number
+  /** Events that make it moot: dropped if waiting, stopped if on, not played if asked for after one of them. */
+  until?: string | string[]
+  /** Goes on at once, ahead of what waits; what it interrupts is said again from its start after it. */
+  urgent?: boolean
 }
 
 /** A line as it is on now. */
@@ -65,6 +74,10 @@ export class CommsSystem {
   private readonly defs = new Map<string, TransmissionDef>()
   /** Which transmissions each event plays. */
   private readonly byEvent = new Map<string, string[]>()
+  /** Which transmissions each event makes moot (`until`). */
+  private readonly byUntil = new Map<string, string[]>()
+  /** Those made moot since the last reset: not played if asked for now. */
+  private readonly moot = new Set<string>()
   private readonly played = new Set<string>()
   private readonly queue: { id: string; wait: number }[] = []
   private playing: { def: TransmissionDef; index: number; age: number; hold: number } | null = null
@@ -85,6 +98,11 @@ export class CommsSystem {
       if (list) list.push(def.id)
       else this.byEvent.set(e, [def.id])
     }
+    for (const e of def.until === undefined ? [] : Array.isArray(def.until) ? def.until : [def.until]) {
+      const list = this.byUntil.get(e)
+      if (list) list.push(def.id)
+      else this.byUntil.set(e, [def.id])
+    }
   }
 
   get(id: string): TransmissionDef | undefined {
@@ -100,12 +118,26 @@ export class CommsSystem {
   play(id: string): void {
     const def = this.defs.get(id)
     if (!def) return
+    if (this.moot.has(id)) return
     if (!def.repeat && this.played.has(id)) return
     this.played.add(id)
     if (def.cut) {
       this.queue.length = 0
       if (this.playing) this.finish()
       this.quiet = 0
+    }
+    if (def.urgent) {
+      // At once: ahead of what waits, and what is on (unless it is urgent itself) put back to be said again after it.
+      const on = this.playing
+      if (on && !on.def.urgent) {
+        this.playing = null
+        for (const fn of this.lineListeners) fn(null)
+        this.queue.unshift({ id: on.def.id, wait: 0 })
+      }
+      const at = on && on.def.urgent ? this.queue.findIndex((q) => !this.defs.get(q.id)?.urgent) : 0
+      this.queue.splice(at < 0 ? this.queue.length : at, 0, { id, wait: def.delay ?? 0 })
+      if (!this.playing) this.quiet = 0
+      return
     }
     if (this.queue.length >= QUEUE_MAX) this.queue.shift()
     this.queue.push({ id, wait: def.delay ?? 0 })
@@ -163,14 +195,29 @@ export class CommsSystem {
     this.playing = null
     this.queue.length = 0
     this.played.clear()
+    this.moot.clear()
     this.quiet = 0
     if (was) for (const fn of this.lineListeners) fn(null)
   }
 
   /** `comms:play:<id>` is in byEvent as each is registered, so one look covers it and the `on` events (which can be another's `comms:done:<id>`, to chain them). */
   private hear(name: string): void {
+    // What this makes moot first (the same event may end one lesson's lines and start the next's).
+    const over = this.byUntil.get(name)
+    if (over) for (const id of over) this.drop(id)
     const ids = this.byEvent.get(name)
     if (ids) for (const id of ids) this.play(id)
+  }
+
+  /** A transmission made moot (`until`): out of the queue, stopped if it is on, and not to be played after. */
+  private drop(id: string): void {
+    this.moot.add(id)
+    for (let i = this.queue.length - 1; i >= 0; i--) if (this.queue[i]!.id === id) this.queue.splice(i, 1)
+    if (this.playing?.def.id === id) {
+      this.finish()
+      // The next is wanted now: no pause for one that was cut short.
+      this.quiet = 0
+    }
   }
 
   private holdOf(def: TransmissionDef, index: number): number {

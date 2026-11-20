@@ -313,6 +313,7 @@ export class World {
     entity.world = this
     entity.removed = false
     this.entities.set(entity.id, entity)
+    this.population++
 
     let types = this.byType.get(entity.type)
     if (!types) this.byType.set(entity.type, (types = new Set()))
@@ -342,6 +343,7 @@ export class World {
   remove(entity: Entity): void {
     if (!this.entities.delete(entity.id)) return
     entity.removed = true
+    this.population++
     entity.onDestroy()
     this.byType.get(entity.type)?.delete(entity)
     for (const tag of entity.tags) this.byTag.get(tag)?.delete(entity)
@@ -648,6 +650,12 @@ export class World {
 
   /** Steps taken, so what is worked out once a step (which rooms can be seen) is not worked out again for every entity. */
   ticks = 0
+
+  /**
+   * Goes up each time an entity comes or goes: what is gathered from the level's entities and kept for a step (its
+   * rooms: entities/awareness.ts) is known to be stale while no steps are taken — a level loading behind the flight.
+   */
+  population = 0
 
   /** The once-a-frame entities' budget (FRAME_ENTITY_BUDGET_MS); Infinity for none. */
   frameBudgetMs = FRAME_ENTITY_BUDGET_MS

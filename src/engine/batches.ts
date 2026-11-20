@@ -14,6 +14,12 @@
  * A prop whose placing object is hidden is not drawn: its whole run is collapsed, and put back (with whatever it has
  * lost collapsed again) when it is shown. A shattered wall hides its object; before this, the object went invisible
  * but its triangles in the batch did not, so a broken wall stayed standing on screen while you walked through it.
+ *
+ * A level may say which part of it a prop is in (`StaticBatches.cells`: a room): then a material's props are one mesh a
+ * part, not one for the whole level, each with its own bounds — so the parts out of the view, or in rooms that cannot be
+ * seen (`mesh.userData.cell`, hidden by whoever knows: render/rt/bake/tier.ts), are not sent to the graphics chip at
+ * all. As one mesh, Level 1's props were 1.2 million vertices drawn every frame from wherever you stood — thirty times
+ * its rooms' own — and most of a slow chip's frame (the user, 2026-11-20: "the level only runs 48 fps at idle").
  */
 
 import * as THREE from 'three'
@@ -21,7 +27,25 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { surfaceOf } from '../render/materials'
 import { getLevelMaterial, surfaceLayer } from '../render/levelmaterial'
 import { toneOf } from './bake'
-import { boundSphere, placedCopy } from '../render/fastgeo'
+import { boundBox, boundSphere, placedCopy } from '../render/fastgeo'
+
+/**
+ * Which part of the level a prop belongs to, by the box round it (in the world): a name (a room's), or null — in none, or
+ * across more than one: drawn whatever is in sight. `version` goes up when the parts change (a level's rooms gathered
+ * again): the batches are then sorted into them again.
+ */
+export interface BatchCells {
+  of(box: THREE.Box3): string | null
+  version(): number
+}
+
+/** One mesh of a material's batch: the props of one part of the level (BatchCells), or of all of it. */
+interface BatchPart {
+  mesh: THREE.Mesh
+  /** The merged index as built: what a collapsed run is put back from. */
+  original: Uint16Array | Uint32Array
+}
+const _box = new THREE.Box3()
 
 /** Told of every run of a slot drawn or collapsed. Nothing listens unless Nikolai Graphics is on (render/rt). */
 let rangeListener: ((slot: BatchSlot, start: number, count: number, visible: boolean) => void) | null = null
@@ -47,6 +71,8 @@ export class BatchSlot {
   readonly placedAt = new THREE.Matrix4()
   /** Whether the slot is drawn: its placer's visibility, as last applied. */
   shown = true
+  /** The mesh of its batch it is in, after the last rebuild (`start` is in that mesh's index). */
+  part: BatchPart | null = null
 
   constructor(
     readonly batch: MaterialBatch,
@@ -70,27 +96,35 @@ export class BatchSlot {
 
 class MaterialBatch {
   readonly slots: BatchSlot[] = []
-  mesh: THREE.Mesh | null = null
-  private original: Uint16Array | Uint32Array | null = null
+  /** Its meshes: one a part of the level (BatchCells), or the one. */
+  readonly parts: BatchPart[] = []
   dirty = true
+  /** The cells' version it was last sorted by (BatchCells.version), -1 with none. */
+  cellsVersion = -1
 
   constructor(
     readonly material: THREE.Material,
     private readonly scene: THREE.Scene,
   ) {}
 
-  rebuild(): void {
+  /** Is anything of it drawn (built, with a mesh). */
+  get built(): boolean {
+    return this.parts.length > 0
+  }
+
+  rebuild(cells: BatchCells | null = null): void {
     this.dirty = false
-    if (this.mesh) {
-      this.scene.remove(this.mesh)
-      this.mesh.geometry.dispose()
-      this.mesh = null
-      this.original = null
+    this.cellsVersion = cells ? cells.version() : -1
+    for (const p of this.parts) {
+      this.scene.remove(p.mesh)
+      p.mesh.geometry.dispose()
     }
-    const parts: THREE.BufferGeometry[] = []
-    const used: BatchSlot[] = []
+    this.parts.length = 0
+    // Each slot's copy in the world, sorted by the part of the level it is in (one group, with no cells).
+    const groups = new Map<string | null, { geos: THREE.BufferGeometry[]; used: BatchSlot[] }>()
     for (const s of this.slots) {
       s.start = -1
+      s.part = null
       if (s.count === 0) continue
       s.placer.updateWorldMatrix(true, false)
       s.placedAt.copy(s.placer.matrixWorld)
@@ -111,31 +145,38 @@ class MaterialBatch {
         for (const name of Object.keys(g.attributes)) if (name !== 'position' && name !== 'normal' && name !== 'uv' && name !== 'aSurface') g.deleteAttribute(name)
         if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2))
       }
-      parts.push(g)
-      used.push(s)
+      const cell = cells ? cells.of(boundBox(g, _box)) : null
+      let group = groups.get(cell)
+      if (!group) groups.set(cell, (group = { geos: [], used: [] }))
+      group.geos.push(g)
+      group.used.push(s)
     }
-    if (parts.length === 0) return
-    const merged = parts.length === 1 ? parts[0]! : mergeGeometries(parts, false)
-    if (parts.length > 1) for (const p of parts) p.dispose()
-    if (!merged || !merged.index) return
-    let at = 0
-    for (const s of used) {
-      s.start = at
-      at += s.count
-    }
-    merged.index.setUsage(THREE.DynamicDrawUsage)
-    boundSphere(merged)
-    this.original = (merged.index.array as Uint16Array | Uint32Array).slice()
-    const mesh = new THREE.Mesh(merged, this.material)
-    // Already in world space; it never moves as an object.
-    mesh.matrixAutoUpdate = false
-    mesh.name = 'static-batch'
-    this.scene.add(mesh)
-    this.mesh = mesh
-    for (const s of used) {
-      s.shown = shownOf(s.placer)
-      if (s.shown) s.onRebuilt()
-      else this.setRange(s, 0, s.count, false)
+    for (const [cell, { geos, used }] of groups) {
+      const merged = geos.length === 1 ? geos[0]! : mergeGeometries(geos, false)
+      if (geos.length > 1) for (const p of geos) p.dispose()
+      if (!merged || !merged.index) continue
+      let at = 0
+      for (const s of used) {
+        s.start = at
+        at += s.count
+      }
+      merged.index.setUsage(THREE.DynamicDrawUsage)
+      boundSphere(merged)
+      const mesh = new THREE.Mesh(merged, this.material)
+      // Already in world space; it never moves as an object.
+      mesh.matrixAutoUpdate = false
+      mesh.name = 'static-batch'
+      // The part of the level it is in (null: none, or the whole level's): whoever knows what is in sight hides it.
+      mesh.userData.cell = cell
+      this.scene.add(mesh)
+      const part: BatchPart = { mesh, original: (merged.index.array as Uint16Array | Uint32Array).slice() }
+      this.parts.push(part)
+      for (const s of used) s.part = part
+      for (const s of used) {
+        s.shown = shownOf(s.placer)
+        if (s.shown) s.onRebuilt()
+        else this.setRange(s, 0, s.count, false)
+      }
     }
   }
 
@@ -156,11 +197,12 @@ class MaterialBatch {
   }
 
   setRange(slot: BatchSlot, start: number, count: number, visible: boolean): void {
-    const index = this.mesh?.geometry.index
-    if (!index || !this.original || slot.start < 0 || count <= 0) return
+    const part = slot.part
+    const index = part?.mesh.geometry.index
+    if (!part || !index || slot.start < 0 || count <= 0) return
     const a = slot.start + start
     const arr = index.array as Uint16Array | Uint32Array
-    if (visible) arr.set(this.original.subarray(a, a + count), a)
+    if (visible) arr.set(part.original.subarray(a, a + count), a)
     // Every index of the run pointing at one vertex: zero-area triangles, which the GPU discards unshaded.
     else arr.fill(arr[a] ?? 0, a, a + count)
     index.addUpdateRange(a, count)
@@ -172,6 +214,11 @@ class MaterialBatch {
 export class StaticBatches {
   private readonly batches = new Map<THREE.Material, MaterialBatch>()
   private readonly batchList: MaterialBatch[] = []
+  /**
+   * The level's parts (its rooms), if it has any to sort the props by: set by the game. Null: one mesh a material, as
+   * it always was.
+   */
+  cells: BatchCells | null = null
 
   constructor(private readonly scene: THREE.Scene) {}
 
@@ -211,7 +258,7 @@ export class StaticBatches {
     // merged mesh after it (the level's props are one batch of a few hundred thousand vertices), was a third of a
     // second's freeze on the Chromebook for every crate destroyed (2026-11-04, the user: slams give lag spikes). Its
     // triangles stay in the buffers, drawn as nothing, until the batch is next built (the editor, the level again).
-    if (!this.building && b.mesh && !b.dirty && slot.start >= 0) {
+    if (!this.building && b.built && !b.dirty && slot.start >= 0) {
       b.setRange(slot, 0, slot.count, false)
       return
     }
@@ -226,8 +273,12 @@ export class StaticBatches {
   update(watchMoves = true): void {
     // (Indexed and over a kept list: iterating a Map and its slots with for…of was garbage every frame on a slow machine.)
     const list = this.batchList
+    const cells = this.cells
+    const cellsVersion = cells ? cells.version() : -1
     for (let i = 0; i < list.length; i++) {
       const b = list[i]!
+      // The level's parts changed (its rooms gathered again: they came in after the props): sorted into them again.
+      if (b.cellsVersion !== cellsVersion) b.dirty = true
       if (!b.dirty && watchMoves) {
         for (let j = 0; j < b.slots.length; j++) {
           const s = b.slots[j]!
@@ -240,7 +291,7 @@ export class StaticBatches {
           }
         }
       }
-      if (b.dirty) b.rebuild()
+      if (b.dirty) b.rebuild(cells)
       else b.syncShown()
     }
   }
@@ -269,7 +320,7 @@ export class StaticBatches {
     let batches = 0
     let slots = 0
     for (const b of this.batches.values()) {
-      if (b.mesh) batches++
+      batches += b.parts.length
       slots += b.slots.length
     }
     return { batches, slots }

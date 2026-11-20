@@ -67,6 +67,26 @@ export function placedCopy(g: THREE.BufferGeometry, m: THREE.Matrix4): THREE.Buf
   return transformGeometry(c, m)
 }
 
+/** The box round `g`'s vertices into `out` (empty where it has none) — straight on the array, nothing kept on `g`. */
+export function boundBox(g: THREE.BufferGeometry, out: THREE.Box3): THREE.Box3 {
+  const pos = g.attributes.position as Attr | undefined
+  if (!pos || !plain(pos) || pos.itemSize !== 3) return pos ? out.setFromBufferAttribute(pos as THREE.BufferAttribute) : out.makeEmpty()
+  const a = pos.array as Float32Array
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+  for (let i = 0; i < a.length; i += 3) {
+    const x = a[i]!, y = a[i + 1]!, z = a[i + 2]!
+    if (x < minX) minX = x
+    if (y < minY) minY = y
+    if (z < minZ) minZ = z
+    if (x > maxX) maxX = x
+    if (y > maxY) maxY = y
+    if (z > maxZ) maxZ = z
+  }
+  out.min.set(minX, minY, minZ)
+  out.max.set(maxX, maxY, maxZ)
+  return out
+}
+
 /** `g.computeBoundingSphere()`: the box's middle, out to the farthest vertex — straight on the array. */
 export function boundSphere(g: THREE.BufferGeometry): void {
   const pos = g.attributes.position as Attr | undefined

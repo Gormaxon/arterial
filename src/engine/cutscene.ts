@@ -221,6 +221,21 @@ export class CutsceneSystem {
     this.finish(true)
   }
 
+  /**
+   * Put away before it is watched (the start screen's START WITHOUT CUTSCENES): ended at once, and unlike skip() none of
+   * its steps still to come fire — nothing of it is done; what it leaves behind is for whoever hears it end to clear.
+   */
+  stop(): void {
+    const def = this.current
+    if (!def) return
+    this.current = null
+    this.clock = 0
+    this.endPlayer = null
+    this.held.clear()
+    this.edges.clear()
+    this.events.emit('cutscene:ended', { name: def.name, skipped: true, stopped: true })
+  }
+
   update(dt: number): void {
     if (!this.current) return
     this.clock += dt

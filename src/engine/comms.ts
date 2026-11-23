@@ -45,6 +45,8 @@ export interface TransmissionDef {
   until?: string | string[]
   /** Goes on ahead of what waits, after the line being said; what it interrupts carries on from its next line after it. */
   urgent?: boolean
+  /** Only in this level (the game's `gate` says which level is on): a level's own lines keyed on events every level sends. */
+  level?: string
 }
 
 /** A line as it is on now. */
@@ -91,6 +93,9 @@ export class CommsSystem {
     events.tap((name) => this.hear(name))
   }
 
+  /** Whether a transmission may play now (the game's: its level is the one on). None: every one may. */
+  gate: ((def: TransmissionDef) => boolean) | null = null
+
   register(def: TransmissionDef): void {
     if (this.defs.has(def.id)) throw new Error(`comms: two transmissions called "${def.id}"`)
     if (def.lines.length === 0) throw new Error(`comms: transmission "${def.id}" has no lines`)
@@ -121,6 +126,7 @@ export class CommsSystem {
   play(id: string): void {
     const def = this.defs.get(id)
     if (!def) return
+    if (this.gate && !this.gate(def)) return
     if (this.moot.has(id)) return
     if (!def.repeat && this.played.has(id)) return
     this.played.add(id)

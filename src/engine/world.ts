@@ -464,6 +464,11 @@ export class World {
   /** The start of a load: clear, and set the scene's background and fog. Returns the entities to spawn. */
   private beginLevel(file: LevelFile): EntityDef[] {
     this.clear()
+    // Numbered from the start each level: a level whose file names no ids (one built by code) gets the same ones however
+    // much was loaded and spawned before it — a level's bake is keyed by its file, ids and all, and Level 2's were
+    // numbered on from wherever the session's count had got to: never what the baker saw, so never drawn from its bake
+    // (the user, 2026-11-24: "the Nikolai shader isn't showing"). (Nothing is left to collide with: all went in clear.)
+    this.idCounter = 0
     this.levelName = typeof file?.name === 'string' ? file.name : ''
     const m = file?.mist
     this.mist = m && typeof m.color === 'number' && typeof m.density === 'number' ? { color: m.color, density: m.density } : null

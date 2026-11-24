@@ -384,7 +384,22 @@ export class NavGrid {
     const nx = this.nx
     const dx = (n % nx) - (c % nx)
     const dz = Math.floor(n / nx) - Math.floor(c / nx)
-    if (dx < -1 || dx > 1 || dz < -1 || dz > 1) return true
+    // A step over more than one cell (a hard shove, a blast's throw, a dodge, a long frame): walked a half cell at a time,
+    // every crossing asked — once let through unasked, and a man thrown at a wall went through it (the user, 2026-11-24:
+    // "enemies phase through walls sometimes").
+    if (dx < -1 || dx > 1 || dz < -1 || dz > 1) {
+      const steps = Math.ceil(Math.max(Math.abs(tx - fx), Math.abs(tz - fz)) / (NAV_CELL * 0.5))
+      let px = fx
+      let pz = fz
+      for (let i = 1; i <= steps; i++) {
+        const qx = fx + ((tx - fx) * i) / steps
+        const qz = fz + ((tz - fz) * i) / steps
+        if (!this.canEnter(px, pz, qx, qz)) return false
+        px = qx
+        pz = qz
+      }
+      return true
+    }
     if (dx && dz) {
       const a = c + dx
       const b = c + dz * nx

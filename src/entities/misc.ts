@@ -59,11 +59,17 @@ export class TriggerVolume extends Entity {
    * the exfil point under the shaft, armed by `mission:exfil`). Kept armed by a checkpoint reached after it.
    */
   armOn = ''
+  /**
+   * Fired by this event instead of by walking in ('': walked into): a level's relay, one thing done setting off another
+   * (Level 2's radar emitters shot out sounding the alarm: its objective done, `mission:exfil`). Armed and `once` as any.
+   */
+  on = ''
 
   private inside = false
   private spent = false
   private armed = true
   private unarm: (() => void) | null = null
+  private unon: (() => void) | null = null
   private readonly aabb = new THREE.Box3()
 
   constructor(def: EntityDef) {
@@ -74,17 +80,27 @@ export class TriggerVolume extends Entity {
     this.once = bool(def.props, 'once', false)
     this.interact = str(def.props, 'interact', '')
     this.armOn = str(def.props, 'armOn', '').trim()
+    this.on = str(def.props, 'on', '').trim()
     this.armed = !this.armOn
   }
 
   override onSpawn(): void {
     super.onSpawn()
     if (this.armOn) this.unarm = this.world.events.on(this.armOn, () => (this.armed = true))
+    if (this.on) {
+      this.unon = this.world.events.on(this.on, () => {
+        if (this.spent || !this.armed) return
+        this.world.events.emit(this.eventName, { trigger: this, event: this.eventName } satisfies TriggerEvent)
+        if (this.once) this.spent = true
+      })
+    }
   }
 
   override onDestroy(): void {
     this.unarm?.()
     this.unarm = null
+    this.unon?.()
+    this.unon = null
     super.onDestroy()
   }
 
@@ -108,8 +124,12 @@ export class TriggerVolume extends Entity {
     return [this.eventName, `${this.eventName}:exit`]
   }
 
+  override eventsHeard(): string[] {
+    return [...(this.on ? [this.on] : []), ...(this.armOn ? [this.armOn] : [])]
+  }
+
   override onUpdate(_dt: number): void {
-    if (this.spent || !this.armed) return
+    if (this.spent || !this.armed || this.on) return
     // Rebuilt every tick from the live position — six additions. Computed once at
     // spawn, a trigger moved in build mode kept firing at the spot it used to be.
     const p = this.object.position
@@ -151,6 +171,7 @@ export class TriggerVolume extends Entity {
     if (this.once) props.once = true
     if (this.interact) props.interact = this.interact
     if (this.armOn) props.armOn = this.armOn
+    if (this.on) props.on = this.on
     return props
   }
 }

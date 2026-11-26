@@ -664,6 +664,11 @@ export class World {
 
   private navTick(spareMs: number): void {
     if (this.building) return
+    // No grid worked out, a slice a frame, for a level no enemy is in (the FOB): built once one is.
+    if (!this.nav.current && this.tagView('enemy').size === 0) {
+      this.navMsLast = 0
+      return
+    }
     const now = performance.now()
     // Well behind (the detail at the bottom of its range), a third of the slice: the same way worked out over more
     // frames, and no frame of a fight given a millisecond and a half of it on top of everything else.

@@ -70,6 +70,11 @@ export class LevelSet {
   /** An exit heard and not yet acted on: a second exit in the same step (two triggers, a boss and a quest) is the same
    * way out, not a second one — it would otherwise complete the level just loaded too, and skip one. */
   private leaving = false
+  /**
+   * What the game makes ready for a level's file before it is spawned (awaited): what only some levels use — a boss's
+   * model — loaded for the level that has it, not held from the start in all of them.
+   */
+  prepare: ((file: LevelFile) => Promise<void>) | null = null
 
   constructor(private readonly world: World) {
     world.events.tap((name, payload) => {
@@ -194,6 +199,7 @@ export class LevelSet {
     if (!entry) return false
     const file = typeof entry.source === 'function' ? await entry.source() : entry.source
     if (!file) return false
+    if (this.prepare) await this.prepare(file)
     const info: LevelInfo = { level: id, index: this.indexOf(id), title: entry.title ?? file.name }
     this.world.events.emit('level:loading', info)
     if (opts?.onProgress || opts?.yieldFn) await this.world.loadAsync(file, opts.onProgress, opts.yieldFn)

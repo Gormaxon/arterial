@@ -118,6 +118,15 @@ export abstract class Entity {
    * the checkpoint's: read it, do not keep or change it. */
   loadState(_state: unknown): void {}
 
+  /**
+   * Put itself back, where it is, as the level starts it — true if it can (a door shut as authored, a crate whole
+   * again). A restart (World.reloadChanged) keeps an entity that can instead of spawning it again: one spawned again is
+   * added to the props' batches again, and every batch it is in is merged and lit afresh. Opt in where it is whole.
+   */
+  restart(): boolean {
+    return false
+  }
+
   /** Subclass-specific fields. Merged into `props` on serialise. */
   protected serializeProps(): Record<string, unknown> {
     return {}

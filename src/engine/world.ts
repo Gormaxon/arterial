@@ -521,6 +521,58 @@ export class World {
     if (!this.building) this.freezeStill()
   }
 
+  /**
+   * The level loaded again from `file` (the level as it was serialised), but only what play has changed: an entity that
+   * says it is as it started (`saveState` undefined) and does nothing by itself each frame (not `needsUpdate`) — a wall,
+   * a prop, a lamp, a crate not yet broken — is kept as it stands; everything else, and whatever play made (`transient`),
+   * goes and is spawned afresh from its definition. The same level as `loadAsync` makes, without rebuilding the hundreds
+   * of things that never moved: their batches, their merged walls, their light, their rooms. On the Chromebook a death
+   * that loaded the whole of Level 2 again sat on the death screen most of a minute (the user, 2026-11-26).
+   * Returns how many entities were spawned again. Entities keep the file's order (a level's key is of it, in order).
+   */
+  async reloadChanged(file: LevelFile, yieldFn: () => Promise<void> = () => new Promise((r) => setTimeout(r, 0)), sliceMs = 14): Promise<number> {
+    this.thawStill()
+    const defs = Array.isArray(file?.entities) ? file.entities : []
+    const byId = new Map<string, EntityDef>()
+    for (const d of defs) if (typeof d.id === 'string') byId.set(d.id, d)
+    let t = performance.now()
+    const slice = async (): Promise<void> => {
+      if (performance.now() - t > sliceMs) {
+        await yieldFn()
+        t = performance.now()
+      }
+    }
+    for (const e of [...this.entities.values()]) {
+      const def = byId.get(e.id)
+      // (Or one that puts itself back as the level starts it: Entity.restart.)
+      const kept = def !== undefined && !e.transient && JSON.stringify(e.serialize()) === JSON.stringify(def) && ((!e.needsUpdate && e.saveState() === undefined) || e.restart())
+      if (!kept) this.remove(e)
+      await slice()
+    }
+    let spawned = 0
+    for (const def of defs) {
+      if (typeof def.id === 'string' && this.entities.has(def.id)) continue
+      this.spawnOne(def)
+      spawned++
+      await slice()
+    }
+    // In the file's order again (those spawned again went to the end).
+    const order = new Map<string, Entity>()
+    for (const def of defs) {
+      const e = typeof def.id === 'string' ? this.entities.get(def.id) : undefined
+      if (e) order.set(e.id, e)
+    }
+    for (const [id, e] of this.entities) if (!order.has(id)) order.set(id, e)
+    this.entities.clear()
+    for (const [id, e] of order) this.entities.set(id, e)
+    this.particles.clear()
+    this.nav.forget()
+    this.aimStatics()
+    this.lastBake = await this.statics.syncAsync(this.staticBuildables(), undefined, yieldFn, sliceMs)
+    if (!this.building) this.freezeStill()
+    return spawned
+  }
+
   /** Tell the cells where the view is and how far it reaches, before they are baked. */
   private aimStatics(): void {
     this.statics.drawDistance = this.drawDistance

@@ -305,6 +305,24 @@ export class StaticBatches {
     }
   }
 
+  /**
+   * `update(false)` behind a loading screen: a batch rebuilt at a time, `slice` awaited after each. In one go it was a
+   * level's every batch in one call — seconds of the Chromebook's processor with the screen in front of it frozen.
+   */
+  async updateAsync(slice: () => Promise<void>): Promise<void> {
+    const list = this.batchList
+    const cells = this.cells
+    const cellsVersion = cells ? cells.version() : -1
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i]!
+      if (b.cellsVersion !== cellsVersion) b.dirty = true
+      if (b.dirty) {
+        b.rebuild(cells)
+        await slice()
+      } else b.syncShown()
+    }
+  }
+
   /** Frames since the props' matrices were last checked for a move. */
   private sinceChecked = 0
   /** The world is being built (the editor): a prop removed is merged out at once, not collapsed in place. */
